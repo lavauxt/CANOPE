@@ -181,20 +181,12 @@ run_canope <- function(
   } else {
     stop("ERROR: 'samples' must be a directory or a valid file path.")
   }
-  # BUG FIX: sapply() with a character input names its result by the input
-  # values (the bam paths) unless USE.NAMES = FALSE; nothing downstream
-  # wants those names, so drop them to avoid confusing partial-name matches.
+
   samples_to_analyse <- sapply(samplesbams, clean_name, USE.NAMES = FALSE)
 
   if (!is.null(reads_file) && file.exists(reads_file)) {
     canope.reads_un <- utils::read.table(reads_file, header = TRUE, check.names = FALSE)
 
-    # BUG FIX: the previous code renamed columns starting at index 4
-    # (colnames(...)[seq(4, ncol)] <- samples_to_analyse), which clobbers the
-    # GENE column whenever reads_file follows the same 4-metadata-column
-    # layout (chromosome, start, end, GENE) used everywhere else in this
-    # pipeline (and assumed a few lines below by `all_sample_names`). The
-    # rename must start at column 5.
     n_expected_meta <- 4L
     if (ncol(canope.reads_un) - n_expected_meta != length(samples_to_analyse)) {
       stop(sprintf(
@@ -232,12 +224,6 @@ run_canope <- function(
       stringsAsFactors = FALSE
     )
 
-    # BUG FIX: previously `coords` was deduplicated and then `counts_df` was
-    # sliced to `seq_len(nrow(coords))` — i.e. the first N rows of the
-    # ORIGINAL (non-deduplicated) counts_df, not the rows that actually
-    # survived deduplication. Any duplicate BED interval misaligned every
-    # subsequent coordinate/count pair. Both must be filtered with the same
-    # logical mask.
     dup_mask  <- duplicated(coords[, c("chromosome", "start", "end")])
     coords    <- coords[!dup_mask, , drop = FALSE]
     counts_df <- counts_df[!dup_mask, , drop = FALSE]
@@ -254,9 +240,6 @@ run_canope <- function(
     stop("ERROR: Provide 'gc_file' OR ('fasta_file' and 'bed_file').")
   }
 
-  # BUG FIX: previously always renamed column 4 to GC_CONTENT regardless of
-  # actual layout. Try a name match first; only fall back to position 4 if
-  # nothing matches and the table is wide enough.
   if (!"GC_CONTENT" %in% colnames(datagc)) {
     gc_col_guess <- grep("^gc", colnames(datagc), ignore.case = TRUE, value = TRUE)[1]
     if (!is.na(gc_col_guess)) {
@@ -269,9 +252,6 @@ run_canope <- function(
   }
   gc <- as.numeric(datagc$GC_CONTENT)
 
-  # BUG FIX: GC was not normalised to a 0-1 fraction before the
-  # gc_extreme_filter step below; a 0-100-scale external gc_file would have
-  # nearly every target filtered out as "extreme".
   if (max(gc, na.rm = TRUE) > 1) {
     log_msg("INFO", "GC content appears to be on a 0-100 scale; converting to fraction.")
     gc <- gc / 100
@@ -307,10 +287,6 @@ run_canope <- function(
     c(samples_to_analyse, refsample_names) else all_sample_names
 
   canope.reads <- canope.reads_un[, c("target", "gc", "GENE", "chromosome", "start", "end", target_samples)]
-
-  # BUG FIX: modechrom/removeY filtering hardcoded "chrX"/"chrY", silently
-  # producing zero rows for BED files using bare "X"/"Y" chromosome names.
-  # Detect the naming style actually present before filtering.
   has_chr_prefix <- any(grepl("^chr", as.character(canope.reads$chromosome)))
   chrX_label <- if (has_chr_prefix) "chrX" else "X"
   chrY_label <- if (has_chr_prefix) "chrY" else "Y"
@@ -428,12 +404,7 @@ run_canope <- function(
 
       if (!is.null(res) && nrow(res$cnvs) > 0) all_cnvs[[samp]] <- res$cnvs
       refs_list[[samp]] <- res$reference_samples
-      # BUG FIX: carry through the normalized test_counts / ref_matrix that
-      # call_cnvs() actually fit `mean`/`var_estimate` against (see comment
-      # in call_cnvs.R). Without these, generate_plots() had no choice but
-      # to recompute "observed" values from the raw counts saved in the
-      # RData workspace, which are on a different depth scale.
-      models_list[[samp]] <- list(
+       models_list[[samp]] <- list(
         target = res$targets, mean = res$mean, var_estimate = res$var_estimate,
         test_counts = res$test_counts, ref_matrix = res$ref_matrix
       )
@@ -465,13 +436,6 @@ run_canope <- function(
   if (!is.null(rdata_output)) {
     cnv_calls <- final_cnvs
     counts    <- canope.reads
-    # BUG FIX: save(..., bed_file = bed_file_out, ...) does NOT rename the
-    # saved object to "bed_file" — save()'s `...` capture object names by
-    # deparsing the expression passed, not by the argument tag. The
-    # workspace therefore never actually contained an object literally named
-    # `bed_file`, forcing every downstream loader (generate_plots, the
-    # report) to silently reconstruct it from `counts`. Assign it to a
-    # variable named `bed_file` first so save() picks up the right name.
     bed_file_obj <- canope.reads[, c("chromosome", "start", "end", "target", "gc", "GENE")]
     bed_file <- bed_file_obj
     models <- models_list

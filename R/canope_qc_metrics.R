@@ -1,8 +1,3 @@
-# =============================================================================
-# canope_qc_metrics.R — QC metrics for the CANOPE pipeline
-# Adapted from ECHO/metrics.R for CANOPE's count matrix layout.
-# =============================================================================
-
 #' Compute CANOPE QC Metrics
 #'
 #' Evaluates coverage quality across all samples and exons.  Writes flagged rows
@@ -36,10 +31,6 @@ run_canope_qc_metrics <- function(counts,
   if (is.na(gene_col))  gene_col  <- names(bed_df)[4]
   if (is.na(chrom_col)) chrom_col <- names(bed_df)[1]
 
-  # NOTE: use local variables here rather than attaching `._gene`/`._chrom`
-  # columns onto bed_df — assign_exon_numbers_per_gene() uses those exact
-  # names internally as temporary column names, and passing them in
-  # pre-existing would collide with (and silently shadow) its own renaming.
   gene_vals  <- bed_df[[gene_col]]
   chrom_vals <- bed_df[[chrom_col]]
 

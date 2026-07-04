@@ -25,16 +25,6 @@ format_chr_label <- function(chr) {
 
 #' Map Target IDs to Row Indices in a Counts Table
 #'
-#' \strong{Bug fix:} the previous implementation fell back to treating an
-#' unmatched target ID as if it were itself a valid row index
-#' (\code{rows[is.na(rows)] <- as.integer(target_ids)[is.na(rows)]}). That
-#' assumption only holds before any QC filtering — once rows are removed
-#' (GC filtering, exon QC, coverage filtering, etc.) \code{target} IDs no
-#' longer equal their row position, so the fallback could silently point at
-#' the wrong row instead of failing loudly. This version simply returns
-#' \code{NA} for unmatched IDs and lets the caller decide whether that is
-#' fatal (most callers already check \code{any(is.na(row_idx))}).
-#'
 #' @param target_ids    Integer vector of target identifiers.
 #' @param target_vector \code{target} column from the counts / BED table.
 #' @return Integer row indices (\code{NA} if a target ID is not found).
@@ -107,15 +97,6 @@ compute_gc_from_bed <- function(fasta_file, bed_input) {
 
 #' Get Read Coverage from BAM files
 #'
-#' \strong{Bug fix:} the previous implementation always called
-#' \code{summarizeOverlaps(..., singleEnd = TRUE)} regardless of how the
-#' BAM files were actually sequenced. Most exome/targeted-panel BAMs are
-#' paired-end; counting them as single-end can mis-count fragments (each
-#' mate counted independently rather than as one fragment, or vice versa
-#' depending on overlap), biasing coverage and downstream CNV calls. This
-#' version auto-detects pairing from the first BAM file (override with
-#' \code{single_end} if you know better, e.g. for a mixed batch).
-#'
 #' @param bam_files Character vector of BAM file paths.
 #' @param bed_input Path to a BED file, or a \code{GRanges} object of targets.
 #' @param single_end Logical or \code{NULL} (default). If \code{NULL}, auto-detect
@@ -160,16 +141,6 @@ get_coverage_from_bams <- function(bam_files, bed_input, single_end = NULL) {
 
 #' Parse a Single Megadepth \code{*.annotation.tsv} File
 #'
-#' Internal helper, factored out from \code{\link{get_coverage_from_bams_megadepth}}
-#' so the parsing logic can be unit-tested independently of actually running the
-#' megadepth binary. Megadepth's \code{--annotation <bed>} mode writes one row
-#' per input BED region, in BED order when \code{--keep-order} is used; the
-#' last column is always the summary statistic (\code{sum} or \code{mean}
-#' coverage depending on \code{--op}), with the first three columns being the
-#' BED region itself (\code{chrom, start, end}). This mirrors the column
-#' layout documented by the Bioconductor \code{megadepth} package's own
-#' \code{read_coverage()} (\code{chr, start, end, score}).
-#'
 #' @param ann_file Path to a \code{*.annotation.tsv} file written by megadepth.
 #' @param n_expected Expected row count (the number of BED targets); used only
 #'   to produce a clear error if the file doesn't match, since a silent length
@@ -200,43 +171,6 @@ get_coverage_from_bams <- function(bam_files, bed_input, single_end = NULL) {
 
 
 #' Get Per-Target Coverage from BAM Files via Megadepth (fast; native Windows binary)
-#'
-#' An alternative, much faster backend for the same job as
-#' \code{\link{get_coverage_from_bams}}: per-target read coverage for a panel
-#' of BAM files. Shells out to the compiled \code{megadepth} tool (Wilks
-#' \emph{et al.} 2021) instead of \code{GenomicAlignments::summarizeOverlaps()}.
-#'
-#' \strong{Why megadepth specifically:} of the three fast depth tools commonly
-#' suggested for this (mosdepth, megadepth, PanDepth), megadepth is the only
-#' one with an officially supported, prebuilt Windows x86-64 binary (confirmed
-#' in its Bioinformatics paper and Bioconductor build reports); mosdepth and
-#' PanDepth are Linux/macOS-only upstream and need WSL2 on Windows. The
-#' Bioconductor \code{megadepth} package's \code{install_megadepth()} downloads
-#' the correct binary for whatever OS R is running on, including Windows, so
-#' nothing needs to be compiled or manually placed on PATH.
-#'
-#' \strong{Note on what's being measured:} megadepth (like mosdepth) reports
-#' base-level \emph{coverage} over each region (summed or averaged per-base
-#' depth), not a "fragment/read count" in the \code{summarizeOverlaps(mode =
-#' "Union")} sense. For CNV calling this is fine -- everything downstream in
-#' CANOPE (GC correction, reference-panel normalisation, the HMM's relative
-#' emission probabilities) operates on relative deviations across samples and
-#' targets, not on read counts being a literal Poisson count of fragments --
-#' but the two are not numerically identical, so don't mix coverage-derived
-#' and summarizeOverlaps-derived counts for the same target in the same run.
-#'
-#' \strong{Verification status:} the CLI contract this function relies on
-#' (\code{--annotation}, \code{--op}, \code{--no-annotation-stdout},
-#' \code{--keep-order}, and the resulting \code{<prefix>.annotation.tsv}
-#' column layout) is documented in megadepth's own README and matches the
-#' column layout (\code{chr, start, end, score}) used by the Bioconductor
-#' package's \code{read_coverage()}. The output-parsing logic
-#' (\code{.parse_megadepth_annotation()}) is unit-tested against that
-#' documented schema. The actual binary was \emph{not} exercised end-to-end
-#' in the environment this was written in (no network path to the GitHub
-#' release asset host from that sandbox), so please run the validation
-#' snippet in the package README/your own one BAM before trusting it for a
-#' full cohort -- CLI flags have shifted across megadepth releases before.
 #'
 #' @param bam_files    Character vector of BAM file paths.
 #' @param bed_input    Path to a BED file of target regions (chrom, start, end, ...).

@@ -1,43 +1,3 @@
-# =============================================================================
-# canoes_legacy_engine.R — the original CANOES HMM core, as an optional
-# alternative engine.
-#
-# This is a faithful, line-by-line port of the HMM machinery from the
-# published CANOES tool (Backenroth et al. 2014, "CANOES: detecting rare copy
-# number variants from whole exome sequencing data"), renamed to this
-# package's snake_case convention but otherwise NOT modified in substance.
-# Selected via engine = "legacy_canoes" in call_cnvs()/run_canope();
-# hmm_engine.R (the modern engine, and the default) is never touched by this
-# file or by selecting this engine.
-#
-# WHAT IS AND ISN'T DIFFERENT FROM hmm_engine.R, FOR THE RECORD:
-#   The transition-matrix formula, the negative-binomial emission model
-#   (state means at 0.5x/1x/1.5x, size = mean^2/(var-mean) halved/doubled per
-#   state), and the forward/backward/Viterbi recursions are ALL the same
-#   underlying math in both engines -- hmm_engine.R is a refactor of CANOES,
-#   not a different model. What genuinely differs if you pick this engine:
-#     1. Inter-target distance: the original measures start-to-start and
-#        never floors at 0 (hmm_engine.R / call_cnvs.R measure start-to-end,
-#        floored at 0 via get_distances()).
-#     2. No "stationary" transition mode -- the original is always
-#        distance-decayed. Requesting transition_model = "stationary" with
-#        this engine is ignored with a warning.
-#     3. Phred scoring has no numerical floor on (1 - prob): exactly
-#        round(min(99, -10*log10(1 - prob))), which can emit NaN/Inf for
-#        prob outside [0,1] due to floating-point error in extreme cases.
-#        That's the literal original behaviour, kept as-is on purpose.
-#     4. The all-states-impossible emission edge case is sentinel-filled with
-#        hard -Inf / -0.01 (the original's choice) rather than the softer
-#        log(1e-12)/0 values hmm_engine.R uses.
-#     5. The initial-state abnormal prior is hardcoded at 0.0075, exactly as
-#        published, not exposed as a tunable parameter the way
-#        hmm_params(prior_abnormal = ...) exposes it in the new engine.
-#   Everything upstream of the HMM (reference-sample selection, NNLS
-#   bootstrap weighting, per-target variance estimation, GC correction) is
-#   shared between both engines unchanged -- this file only swaps the HMM
-#   core, matching how "the HMM model" was scoped in this project throughout.
-# =============================================================================
-
 #' @export
 legacy_num_states <- 3L
 #' @export
@@ -125,7 +85,6 @@ legacy_transition_logprobs <- function(distance, p, Tnum, D) {
 #' the original fills with hard \code{-Inf}/\code{-0.01} sentinels rather than
 #' the softer finite values the modern engine uses.
 #'
-#' @inheritParams emission_probs
 #' @return Matrix with columns \code{target, delprob, normalprob, dupprob} (log-scale).
 #' @export
 legacy_emission_probs <- function(test_counts, target_means, var_estimate, targets) {

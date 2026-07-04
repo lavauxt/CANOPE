@@ -108,11 +108,6 @@ call_cnvs <- function(
     chr <- dplyr::case_when(chr == "X" ~ "23", chr == "Y" ~ "24", TRUE ~ chr)
   }
   counts$chromosome <- suppressWarnings(as.integer(chr))
-
-  # ── BUG FIX: drop rows whose chromosome could not be mapped to an integer
-  # (e.g. chrM, scaffolds, or malformed labels). Previously these became NA
-  # and were silently carried through dplyr::arrange()/get_distances(),
-  # which could corrupt chromosome-boundary detection and CNV grouping. ──
   unmapped <- is.na(counts$chromosome)
   if (any(unmapped)) {
     message(sprintf(
@@ -147,8 +142,6 @@ call_cnvs <- function(
   if (length(ref_pool) == 0) stop("No valid reference samples")
 
   cors <- cor_mat[sample_name, ref_pool]
-  # BUG FIX: matrix subsetting with a single-element ref_pool silently drops
-  # names, which broke the downstream sort()/names() pipeline below.
   if (is.null(names(cors))) names(cors) <- ref_pool
 
   if (!is.null(min_cor)) {
@@ -263,19 +256,6 @@ call_cnvs <- function(
       targets = counts$target,
       mean = counts$mean,
       var_estimate = robust_var,
-      # BUG FIX: also return the test sample's counts and reference matrix
-      # exactly as they stood when `mean`/`var_estimate` were computed —
-      # i.e. after the global median normalisation (line ~135) and the
-      # per-sample reference rescaling to this sample's own median (line
-      # ~172). Both of those only ever mutated call_cnvs()'s local copy of
-      # `counts`; the caller's original data frame (saved verbatim to the
-      # RData workspace as `counts`) never saw them. Anything downstream
-      # that compared *that* raw `counts` against `mean`/`var_estimate` was
-      # therefore comparing two different depth scales — which is why the
-      # NB predictive-interval and z-score panels showed the test sample
-      # wildly outside the interval even with no real CNV. Returning these
-      # here lets plotting code use values that are actually on the same
-      # scale the model was fit on.
       test_counts = test_counts,
       ref_matrix = as.matrix(ref_data),
       sample_weights = sample_weights,
@@ -348,9 +328,6 @@ genotype_cnvs <- function(
     stringsAsFactors = FALSE
   )
 
-  # Phred scoring: engine = "new" keeps the numerical floor added on top of
-  # the original formula (see call_cnvs.R history); engine = "legacy_canoes"
-  # uses the literal, unguarded original formula (legacy_phred()) on purpose.
   phred <- if (engine == "legacy_canoes") {
     legacy_phred
   } else {
@@ -444,20 +421,6 @@ summarize_cnvs <- function(cnv_targets, counts, sample_name, state) {
 
 
 #' Convert Viterbi State Path into CNV Call Records
-#'
-#' \strong{Bug fix:} the previous implementation grouped consecutive
-#' abnormal-state row indices WITHOUT checking whether the chromosome
-#' changed between two adjacent rows. Because the HMM treats the whole
-#' genome as one sequence (chromosome breaks are encoded only via a very
-#' large transition distance, not a hard boundary), an abnormal-state run
-#' could in rare cases straddle the last target of one chromosome and the
-#' first target of the next, producing a single nonsensical CNV record
-#' that spanned two chromosomes (the bug additionally mislabelled such a
-#' record using only the first row's chromosome). This version explicitly
-#' starts a new CNV group whenever \code{chromosome} differs between
-#' consecutive same-state rows, in addition to the existing row-contiguity
-#' check.
-#'
 #' @noRd
 print_cnvs <- function(test_sample_name, viterbi_df, nonzero_counts, reference_samples) {
   consecutive_groups <- function(idx, chrom) {

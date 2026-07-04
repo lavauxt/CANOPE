@@ -1,11 +1,3 @@
-# =============================================================================
-# canope_vcf_export.R — Export CANOPE CNV calls to VCF format
-# Adapted from ECHO/vcf_export.R for CANOPE's xcnv column layout:
-#   SAMPLE, CNV (DEL|DUP), INTERVAL ("chr1:100-200"), KB, CHR, MID_BP,
-#   TARGETS, NUM_TARG, GENE, MLCN, Q_SOME, NUM_REFS, REF_SAMPLES,
-#   [Confidence, CN_label after score_canope_confidence()]
-# =============================================================================
-
 #' Export CANOPE CNV calls to VCF
 #'
 #' Converts a CANOPE CNV-call data frame (as returned by \code{\link{run_canope}}

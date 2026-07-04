@@ -1,12 +1,3 @@
-# =============================================================================
-# canope_confidence.R — CNV confidence scoring for CANOPE output
-# Adapted from ECHO/cnv_calls.R::score_cnv_confidence.
-#
-# CANOPE CNV columns used here:
-#   SAMPLE, CNV (DEL|DUP), INTERVAL, KB, CHR, MID_BP,
-#   TARGETS, NUM_TARG, GENE, MLCN, Q_SOME, NUM_REFS, REF_SAMPLES
-# =============================================================================
-
 #' Score CANOPE CNV Calls (HIGH / MEDIUM / LOW)
 #'
 #' Uses the phred-like \code{Q_SOME} quality score, the number of reference
@@ -68,12 +59,10 @@ score_canope_confidence <- function(
   cnv_type <- toupper(as.character(cnv_calls$CNV))   # "DEL" or "DUP"
   genes    <- as.character(cnv_calls$GENE)
 
-  # Is the MLCN consistent with the CNV call?
   mlcn_consistent <- (cnv_type == "DEL" & mlcn <= 1L) |
                      (cnv_type == "DUP" & mlcn >= 3L) |
                      mlcn == 0L                          # homozygous deletion always consistent
 
-  # Gene flagged as difficult?
   gene_flagged <- vapply(genes, function(g) {
     syms <- trimws(unlist(strsplit(g, "[;, ]")))
     any(syms %in% low_confidence_genes)

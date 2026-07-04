@@ -63,10 +63,6 @@ generate_canope_report <- function(rdata_output,
                                    log_file = NULL,
                                    prefix = "CANOPE",
                                    template_path = NULL) {
-  # Captured immediately, before anything else in this function could change
-  # it, so relative paths the *caller* built (log_file, qc_metrics_file,
-  # sample_table, rdata_output itself) keep meaning what the caller meant by
-  # them — see the knit_root_dir note below.
   caller_wd <- getwd()
 
   if (!requireNamespace("rmarkdown", quietly = TRUE))
@@ -102,21 +98,8 @@ generate_canope_report <- function(rdata_output,
 
   if (is.null(template_path)) {
     local_candidate <- file.path(dirname(rdata_output), "CANOPE_report.Rmd")
-    # BUG FIX: the template ships in inst/rmd/CANOPE_report.Rmd, so once the
-    # package is installed it resolves via system.file() under "rmd/...", not
-    # "rmarkdown/...". The old candidate never matched anything post-install
-    # (system.file() silently returns "" for a nonexistent subdir), so this
-    # fallback always failed unless a copy happened to sit next to the RData
-    # or in the working directory — which is why the report wasn't found.
     pkg_candidate   <- system.file("rmd/CANOPE_report.Rmd", package = "CANOPE")
     here_candidate  <- file.path(getwd(), "CANOPE_report.Rmd")
-    # BUG FIX: when these files are sourced directly (the README's quick-start
-    # usage) rather than installed as a package, the only fallback that ever
-    # matched was here_candidate — which depends on getwd() being exactly the
-    # folder the scripts were sourced from. Call run_canope() from anywhere
-    # else and the template silently couldn't be found, even sitting right
-    # next to canope_report.R. Add that folder as a fallback independent of
-    # getwd().
     source_candidate <- if (!is.null(.canope_report_source_dir))
       file.path(.canope_report_source_dir, "CANOPE_report.Rmd") else NULL
     candidates <- c(local_candidate, here_candidate, source_candidate, pkg_candidate)
@@ -128,24 +111,6 @@ generate_canope_report <- function(rdata_output,
   }
 
   hmm_engine_used <- if ("hmm_engine_used" %in% ls(local_env)) local_env$hmm_engine_used else "new"
-
-  # BUG FIX (this is why the report wasn't generating): rmarkdown::render()
-  # does NOT resolve a relative `output_file` against the caller's working
-  # directory — it resolves it against the directory containing the *input*
-  # Rmd file. `template_path` here is typically an absolute path to wherever
-  # CANOPE_report.Rmd happens to live (e.g. next to the pipeline's other .R
-  # files), which is almost never the same place as `output_dir`. So a
-  # perfectly valid, already-created `output_dir` like "results/report"
-  # would make render() look for "results/report" *relative to the Rmd's own
-  # folder* and fail with "The directory 'results/report' does not exist" —
-  # even though that directory unquestionably exists relative to where
-  # run_canope() was actually called from. Confirmed by direct reproduction:
-  # calling rmarkdown::render() with a relative output_file from a working
-  # directory other than the Rmd's own directory throws exactly that error,
-  # regardless of whether the target directory exists relative to getwd().
-  # Fix: build an absolute output_file. output_dir is already guaranteed to
-  # exist at this point (created above), so normalizePath() on it is safe;
-  # only the (possibly nonexistent) filename is appended afterward.
   out_file <- file.path(normalizePath(output_dir, mustWork = TRUE),
                         paste0("CANOPE_", prefix, "_report.html"))
 
@@ -164,17 +129,6 @@ generate_canope_report <- function(rdata_output,
       hmm_engine_used = hmm_engine_used
     ),
     output_file = out_file,
-    # BUG FIX: by default, rmarkdown::render() evaluates the Rmd's own code
-    # chunks with the working directory set to the *Rmd's* directory, not
-    # the caller's. That's a second, quieter instance of the same
-    # relative-path problem fixed above for `out_file`: any relative path a
-    # chunk touches (here, `log_file`, built by run_canope() relative to
-    # *its* caller's working directory) would resolve against the wrong
-    # base and silently fail its file.exists() check — the report would
-    # still render, just missing its pipeline-log tab, with nothing telling
-    # you why. Pinning knit_root_dir to the working directory this function
-    # was actually called from keeps every relative path inside the Rmd
-    # meaning what its caller meant by it.
     knit_root_dir = caller_wd,
     quiet = FALSE
   )
