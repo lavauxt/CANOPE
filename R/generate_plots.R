@@ -44,6 +44,10 @@ generate_plots <- function(
   if (length(missing_vars) > 0)
     stop("[ERROR] Missing variables in RData: ", paste(missing_vars, collapse = ", "))
 
+  # The CI/z-score panels need test_counts/ref_matrix alongside the older
+  # mean/var_estimate fields (see call_cnvs.R / create_zscore_plot). An
+  # RData written before that fix won't have them — fail clearly here
+  # rather than deep inside a per-call tryCatch with a vague NULL error.
   model_fields_missing <- vapply(models, function(m)
     !all(c("target", "test_counts", "ref_matrix") %in% names(m)), logical(1))
   if (length(models) > 0 && any(model_fields_missing))
@@ -177,7 +181,6 @@ generate_plots <- function(
 
       p_cov   <- create_coverage_plot(cov_data, pt_data, single_chr, prev, exon_range, exon_index)
       p_genes <- create_gene_tile_plot(bed_file, exon_range, single_chr, prev, new_chr)
-
       test_counts   <- model_lookup(models[[sample_name]], "test_counts", bed_file$target[exon_range])
       target_means  <- model_mean
       target_vars   <- model_var
@@ -202,7 +205,10 @@ generate_plots <- function(
         )
       )
 
-
+      # Per-call diagnostic: does this window's background (non-called)
+      # coverage actually fit the model as well as the interval implies?
+      # See check_background_calibration() in canope_utils.R for the full
+      # rationale (README "Round 5") — this flags, it doesn't correct.
       bg_calib <- check_background_calibration(
         ci_data$ratio, ci_data$lo, ci_data$hi, ci_data$is_affected == "Affected"
       )
@@ -285,6 +291,9 @@ model_lookup <- function(model, field, target_ids) {
 
 #' Look Up Per-Target Model Statistics (matrix form)
 #'
+#' Same target-ID alignment as \code{\link{model_lookup}}, but for a
+#' matrix-valued model field (one row per target, one column per reference
+#' sample) such as \code{ref_matrix}.
 #' @noRd
 model_matrix_lookup <- function(model, field, target_ids) {
   mat <- model[[field]]
@@ -301,7 +310,7 @@ model_matrix_lookup <- function(model, field, target_ids) {
 
 
 #' Z-Score Panel vs Reference Samples
-#'
+#' 
 #' @param model      \code{models[[sample_name]]} — must carry
 #'   \code{target}, \code{test_counts}, \code{var_estimate}, and
 #'   \code{ref_matrix} (columns named by reference sample, in the same

@@ -328,6 +328,9 @@ genotype_cnvs <- function(
     stringsAsFactors = FALSE
   )
 
+  # Phred scoring: engine = "new" keeps the numerical floor added on top of
+  # the original formula (see call_cnvs.R history); engine = "legacy_canoes"
+  # uses the literal, unguarded original formula (legacy_phred()) on purpose.
   phred <- if (engine == "legacy_canoes") {
     legacy_phred
   } else {
@@ -421,6 +424,7 @@ summarize_cnvs <- function(cnv_targets, counts, sample_name, state) {
 
 
 #' Convert Viterbi State Path into CNV Call Records
+#'
 #' @noRd
 print_cnvs <- function(test_sample_name, viterbi_df, nonzero_counts, reference_samples) {
   consecutive_groups <- function(idx, chrom) {

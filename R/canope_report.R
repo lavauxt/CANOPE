@@ -1,17 +1,5 @@
 #' Directory this file was \code{source()}d from (if it was)
 #'
-#' The quick-start usage in the README sources every pipeline file —
-#' including this one — directly with plain filenames, which only works if
-#' the current working directory happens to be the folder all those files
-#' (and \code{CANOPE_report.Rmd}) live in. As soon as \code{run_canope()} is
-#' called from a different working directory (a wrapper script, an RStudio
-#' project rooted elsewhere, a scheduled job, etc.), \code{getwd()} no
-#' longer points at that folder and the template can't be found even though
-#' it's sitting right next to this very file. This captures that location
-#' at source-time as a robust fallback, independent of the caller's
-#' \code{getwd()}. Silently evaluates to \code{NULL} when the package is
-#' loaded normally (installed and \code{library()}'d) rather than sourced,
-#' since \code{system.file()} already covers that case.
 #' @noRd
 .canope_report_source_dir <- local({
   ofile <- tryCatch({
@@ -63,6 +51,10 @@ generate_canope_report <- function(rdata_output,
                                    log_file = NULL,
                                    prefix = "CANOPE",
                                    template_path = NULL) {
+  # Captured immediately, before anything else in this function could change
+  # it, so relative paths the *caller* built (log_file, qc_metrics_file,
+  # sample_table, rdata_output itself) keep meaning what the caller meant by
+  # them — see the knit_root_dir note below.
   caller_wd <- getwd()
 
   if (!requireNamespace("rmarkdown", quietly = TRUE))

@@ -6,31 +6,6 @@
 #' added alongside this fix: BED preprocessing, CNV confidence scoring, QC
 #' metrics, PCA, VCF export, and an interactive HTML report.
 #'
-#' \strong{Bug fixes in this version (see inline \verb{# BUG FIX} comments):}
-#' \enumerate{
-#'   \item \code{reads_file} ingestion renamed columns starting at the wrong
-#'         index (4 instead of 5), silently destroying the \code{GENE} column
-#'         whenever a pre-computed counts table was supplied with the same
-#'         4-metadata-column layout (\code{chromosome,start,end,GENE}) used
-#'         everywhere else in the pipeline.
-#'   \item Auto-coverage extraction from BAMs deduplicated \code{coords} and
-#'         then sliced \code{counts_df} by row position — if the BED file
-#'         had duplicate intervals, this silently misaligned every
-#'         coordinate with the wrong count row after the first duplicate.
-#'   \item \code{modechrom}/\code{removeY} filtering hardcoded \code{"chrX"}/
-#'         \code{"chrY"}, which silently produced zero rows for BED files
-#'         using bare \code{"X"}/\code{"Y"} chromosome names.
-#'   \item GC content was not normalised to a 0–1 fraction before the
-#'         \code{gc_extreme_filter} step, so externally-supplied GC tables on
-#'         a 0–100 scale would have nearly every target filtered out.
-#'   \item GC column auto-detection assumed the GC value was always column 4,
-#'         which is wrong for some external \code{gc_file} layouts.
-#'   \item \code{save(..., bed_file = bed_file_out, ...)} does not actually
-#'         save an object named \code{bed_file} — R's \code{save()} does not
-#'         support renaming objects via a named argument, so the persisted
-#'         RData never actually contained \code{bed_file} under that name.
-#' }
-#'
 #' @param gc_file            Character or NULL. Path to pre-computed GC table.
 #' @param fasta_file         Character or NULL. Path to genome FASTA (used with bed_file).
 #' @param reads_file         Character or NULL. Path to pre-computed counts table
@@ -186,7 +161,6 @@ run_canope <- function(
 
   if (!is.null(reads_file) && file.exists(reads_file)) {
     canope.reads_un <- utils::read.table(reads_file, header = TRUE, check.names = FALSE)
-
     n_expected_meta <- 4L
     if (ncol(canope.reads_un) - n_expected_meta != length(samples_to_analyse)) {
       stop(sprintf(
@@ -287,6 +261,7 @@ run_canope <- function(
     c(samples_to_analyse, refsample_names) else all_sample_names
 
   canope.reads <- canope.reads_un[, c("target", "gc", "GENE", "chromosome", "start", "end", target_samples)]
+
   has_chr_prefix <- any(grepl("^chr", as.character(canope.reads$chromosome)))
   chrX_label <- if (has_chr_prefix) "chrX" else "X"
   chrY_label <- if (has_chr_prefix) "chrY" else "Y"
@@ -404,7 +379,7 @@ run_canope <- function(
 
       if (!is.null(res) && nrow(res$cnvs) > 0) all_cnvs[[samp]] <- res$cnvs
       refs_list[[samp]] <- res$reference_samples
-       models_list[[samp]] <- list(
+      models_list[[samp]] <- list(
         target = res$targets, mean = res$mean, var_estimate = res$var_estimate,
         test_counts = res$test_counts, ref_matrix = res$ref_matrix
       )

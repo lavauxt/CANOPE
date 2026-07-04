@@ -59,10 +59,12 @@ score_canope_confidence <- function(
   cnv_type <- toupper(as.character(cnv_calls$CNV))   # "DEL" or "DUP"
   genes    <- as.character(cnv_calls$GENE)
 
+  # Is the MLCN consistent with the CNV call?
   mlcn_consistent <- (cnv_type == "DEL" & mlcn <= 1L) |
                      (cnv_type == "DUP" & mlcn >= 3L) |
                      mlcn == 0L                          # homozygous deletion always consistent
 
+  # Gene flagged as difficult?
   gene_flagged <- vapply(genes, function(g) {
     syms <- trimws(unlist(strsplit(g, "[;, ]")))
     any(syms %in% low_confidence_genes)
