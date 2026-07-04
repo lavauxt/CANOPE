@@ -1,0 +1,31 @@
+Package: CANOPE
+Type: Package
+Title: Copy-number Analysis using Normalized Observation Profiling for Exomes
+Version: 0.1.0
+Author: TL
+Maintainer: TL <lavauxt@gmail.com>
+Description: An R package for detecting copy number variations (CNVs) in targeted and exome sequencing data using low-variance reference sample selection and hidden Markov modeling.
+License: MIT
+Encoding: UTF-8
+LazyData: true
+Depends: R (>= 4.0.0)
+Imports: 
+    dplyr,
+    nnls,
+    Hmisc,
+    mgcv,
+    stats,
+    utils,
+    Biostrings,
+    rtracklayer,
+    GenomicRanges,
+    GenomeInfoDb,
+    BiocGenerics,
+    Rsamtools,
+    GenomicAlignments,
+    SummarizedExperiment,
+    ggplot2,
+    matrixStats,
+    HMM,
+    data.table
+RoxygenNote: 8.0.0
