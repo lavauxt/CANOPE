@@ -134,14 +134,6 @@ test_counts <- get_coverage_from_bams_megadepth("one_sample.bam", "panel.bed")
 head(test_counts)
 ```
 
-Of the usual fast-depth tools (mosdepth / megadepth / PanDepth), **megadepth
-is the only one with an official native Windows binary** — confirmed in its
-Bioinformatics paper and Bioconductor's own Windows build reports. mosdepth
-and PanDepth are Linux/macOS-only upstream and need WSL2 on Windows. The
-Bioconductor `megadepth` package's `install_megadepth()` downloads the right
-binary for whatever OS R is on, Windows included, so there's nothing to
-compile or hand-place on `PATH`.
-
 Switch backends with one argument:
 
 ```r
@@ -153,18 +145,6 @@ run_canope(
 )
 ```
 ## Optional legacy HMM engine (original CANOES)
-
-**What's actually different between the two**, since the underlying
-statistical model turned out to already be the same one (the "new" engine in
-`hmm_engine.R` is itself a refactor of CANOES, not a different model):
-
-`canoes_legacy_engine.R` was checked function-by-function against your
-actual uploaded `CANOES.R` (`GetDistances`, `GetTransitionMatrix`,
-`EmissionProbs`, `Viterbi`, `GetForwardMatrix`/`GetBackwardMatrix`,
-`GetModifiedLikelihood`, and the inline Phred formula) on identical synthetic
-inputs — every one matched exactly, including the `NaN`-producing Phred edge
-case. A full `call_cnvs()` run with an injected deletion and duplication was
-also run under both engines end-to-end and detected the same calls.
 
 ```r
 run_canope(..., engine = "legacy_canoes")   # or per-sample: call_cnvs(..., engine = "legacy_canoes")
