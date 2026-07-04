@@ -44,10 +44,6 @@ generate_plots <- function(
   if (length(missing_vars) > 0)
     stop("[ERROR] Missing variables in RData: ", paste(missing_vars, collapse = ", "))
 
-  # The CI/z-score panels need test_counts/ref_matrix alongside the older
-  # mean/var_estimate fields (see call_cnvs.R / create_zscore_plot). An
-  # RData written before that fix won't have them — fail clearly here
-  # rather than deep inside a per-call tryCatch with a vague NULL error.
   model_fields_missing <- vapply(models, function(m)
     !all(c("target", "test_counts", "ref_matrix") %in% names(m)), logical(1))
   if (length(models) > 0 && any(model_fields_missing))
@@ -205,10 +201,6 @@ generate_plots <- function(
         )
       )
 
-      # Per-call diagnostic: does this window's background (non-called)
-      # coverage actually fit the model as well as the interval implies?
-      # See check_background_calibration() in canope_utils.R for the full
-      # rationale (README "Round 5") — this flags, it doesn't correct.
       bg_calib <- check_background_calibration(
         ci_data$ratio, ci_data$lo, ci_data$hi, ci_data$is_affected == "Affected"
       )
