@@ -39,8 +39,10 @@ a \code{sample_name} column; \code{gender} optional) for PCA coloring.}
 (\code{CANOPE_<prefix>_report.html}). Default \code{"CANOPE"}.}
 
 \item{template_path}{Optional explicit path to \code{CANOPE_report.Rmd}.
-If \code{NULL}, looks for it alongside this R file, then via
-\code{system.file("rmarkdown/CANOPE_report.Rmd", package = "CANOPE")}.}
+If \code{NULL}, looks for it next to the RData, then in the working
+directory, then via
+\code{system.file("rmd/CANOPE_report.Rmd", package = "CANOPE")} (the
+template's actual location, \code{inst/rmd/}, once installed).}
 }
 \value{
 Invisibly returns the path to the rendered HTML file.
