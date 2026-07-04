@@ -15,13 +15,5 @@ targets_to_rows(target_ids, target_vector)
 Integer row indices (\code{NA} if a target ID is not found).
 }
 \description{
-\strong{Bug fix:} the previous implementation fell back to treating an
-unmatched target ID as if it were itself a valid row index
-(\code{rows[is.na(rows)] <- as.integer(target_ids)[is.na(rows)]}). That
-assumption only holds before any QC filtering — once rows are removed
-(GC filtering, exon QC, coverage filtering, etc.) \code{target} IDs no
-longer equal their row position, so the fallback could silently point at
-the wrong row instead of failing loudly. This version simply returns
-\code{NA} for unmatched IDs and lets the caller decide whether that is
-fatal (most callers already check \code{any(is.na(row_idx))}).
+Map Target IDs to Row Indices in a Counts Table
 }

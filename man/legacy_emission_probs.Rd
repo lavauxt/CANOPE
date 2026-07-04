@@ -6,6 +6,15 @@
 \usage{
 legacy_emission_probs(test_counts, target_means, var_estimate, targets)
 }
+\arguments{
+\item{test_counts}{Integer vector of observed read counts for the test sample (one per target).}
+
+\item{target_means}{Numeric vector of expected read counts (mean) for each target (from reference panel).}
+
+\item{var_estimate}{Numeric vector of variance estimates for each target.}
+
+\item{targets}{Integer vector of target identifiers.}
+}
 \value{
 Matrix with columns \code{target, delprob, normalprob, dupprob} (log-scale).
 }

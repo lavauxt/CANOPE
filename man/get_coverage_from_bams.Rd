@@ -18,12 +18,5 @@ from the first BAM file via \code{Rsamtools::testPairedEndBam}.}
 Data frame of read counts (rows = targets, columns = BAM basenames).
 }
 \description{
-\strong{Bug fix:} the previous implementation always called
-\code{summarizeOverlaps(..., singleEnd = TRUE)} regardless of how the
-BAM files were actually sequenced. Most exome/targeted-panel BAMs are
-paired-end; counting them as single-end can mis-count fragments (each
-mate counted independently rather than as one fragment, or vice versa
-depending on overlap), biasing coverage and downstream CNV calls. This
-version auto-detects pairing from the first BAM file (override with
-\code{single_end} if you know better, e.g. for a mixed batch).
+Get Read Coverage from BAM files
 }

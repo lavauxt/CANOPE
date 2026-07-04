@@ -85,7 +85,10 @@ legacy_transition_logprobs <- function(distance, p, Tnum, D) {
 #' the original fills with hard \code{-Inf}/\code{-0.01} sentinels rather than
 #' the softer finite values the modern engine uses.
 #'
-#' @inheritParams emission_probs
+#' @param test_counts Integer vector of observed read counts for the test sample (one per target).
+#' @param target_means Numeric vector of expected read counts (mean) for each target (from reference panel).
+#' @param var_estimate Numeric vector of variance estimates for each target.
+#' @param targets Integer vector of target identifiers.
 #' @return Matrix with columns \code{target, delprob, normalprob, dupprob} (log-scale).
 #' @export
 legacy_emission_probs <- function(test_counts, target_means, var_estimate, targets) {
