@@ -19,10 +19,11 @@ By employing low-variance reference sample selection, Negative Binomial emission
 
 ## Key Features
 
+* **YAML-Driven Pipeline:** A single `canope("config.yaml")` command handles BED preprocessing, BAM coverage extraction, GC correction, QC, HMM calling, confidence scoring, VCF export, and HTML reporting.
 * **Smart Normalization:** Automatically selects the most highly correlated reference samples (up to a user-defined threshold) to build an expected baseline via Non-Negative Least Squares (NNLS).
 * **Robust HMM Engine:** Implements a Hidden Markov Model with dynamically computed transition probabilities (based on genomic distance) and Negative Binomial emission probabilities.
+* **Auto-Extraction:** Built-in auto-extraction of per-target read counts directly from BAM files (via `GenomicAlignments` or `megadepth`) and GC content directly from `BSgenome` packages or indexed FASTA files.
 * **Native Visualization:** Generates comprehensive PDF reports with tracking plots, coverage ratios, and specific gene annotations completely independent of heavy third-party plotting frameworks.
-* **GC Content Correction:** Built-in tools (`compute_gc_from_bed`) to directly parse GC fraction from FASTA files and correct GC-bias natively.
 
 ## Installation
 
@@ -38,7 +39,7 @@ devtools::install_github("lavauxt/CANOPE")
 
 ### Dependencies
 Core: `dplyr`, `nnls`, `stats`, `utils`, `tools`, `data.table`, `matrixStats`,
-`HMM`, `ggplot2`, and the Bioconductor packages `Biostrings`, `rtracklayer`,
+`yaml`, `HMM`, `ggplot2`, and the Bioconductor packages `Biostrings`, `rtracklayer`,
 `GenomicRanges`, `GenomeInfoDb`, `BiocGenerics`, `Rsamtools`,
 `GenomicAlignments`, `SummarizedExperiment`, `IRanges`, `S4Vectors`.
 
@@ -50,43 +51,53 @@ coverage), `GenomicFeatures` + a `TxDb.Hsapiens.UCSC.*` package + `org.Hs.eg.db`
 ## Quick Start
 
 ### 1. Data Preparation
-Ensure you have your raw coverage counts and GC content ready. CANOPE expects a `.tsv` format where the first columns represent coordinates (`chromosome`, `start`, `end`), followed by sample counts.
+Ensure you have your BAM files and a BED file of target regions. If you don't have pre-computed count matrices, CANOPE will automatically extract coverage from your BAMs and compute GC content using a `BSgenome` package or an indexed FASTA file.
 
-### 2. Running the Pipeline
-You can run the entire detection pipeline using the `run_canope` wrapper function:
+### 2. Create a Configuration File
+Create a `config.yaml` file to define your inputs, outputs, and HMM parameters.
+
+```yaml
+input:
+  bed: "data/targets.bed"
+  bamdir: "data/bams/"
+
+settings:
+  bsgenome_pkg: "BSgenome.Hsapiens.UCSC.hg19"  # Or use fasta_file instead
+  modechrom: "A"
+  p_value: 1e-08
+  Tnum: 6
+  numrefs: 30
+  coverage_backend: "bioconductor"             # or "megadepth"
+  bed_process: "STANDARD"                      # or "NO" / "REGEN"
+  run_qc_metrics: TRUE
+  export_vcf: TRUE
+  report: TRUE
+
+output:
+  dir: "results"
+  prefix: "CANOPE"
+```
+
+### 3. Run the Pipeline
+Execute the entire pipeline by passing the config file to the `canope()` wrapper:
 
 ```R
 library(CANOPE)
 
-# Execute the pipeline directly on Autosomes
-run_canope(
-  gc_file     = "data/gc.tsv",
-  reads_file  = "data/canope.reads.tsv",
-  samples     = c("Sample1", "Sample2", "Sample3"), # Vector of test samples
-  modechrom   = "A",                                 # "A" for Autosomes, "XX" or "XY" for sex chromosomes
-  output_file = "results/CNVCall_Autosomes.csv",
-  rdata_output= "results/canope_workspace.RData"
-)
+# Run the full end-to-end pipeline
+canope(config_path = "config.yaml")
 ```
 
-### 3. Visualizing Results
-If you provided an `rdata_output` path during the run, you can generate detailed PDF visualizations of the called CNVs:
-
-```R
-generate_plots(
-  rdata_file = "results/canope_workspace.RData",
-  output_dir = "results/plots",
-  modechrom  = "A"
-)
-```
+### 4. Visualizing Results
+If `report: TRUE` is set in your config, an interactive HTML report will be generated in the output directory. Additionally, static PDF plots for each CNV call are saved in the `results/plots/` folder.
 
 ## Input File Formats
 
-**GC File (`gc.tsv`)**
-Must contain a column exactly named `GC_CONTENT` as the 4th column. *Tip: Use CANOPE's `compute_gc_from_bed(fasta_file, bed_input)` function to generate this easily.*
+**BED File**
+Standard 0-based BED file. If `bed_process` is set to `"STANDARD"` or `"REGEN"`, the input BED will be automatically annotated with gene/exon information before coverage extraction.
 
-**Reads File (`canope.reads.tsv`)**
-Tab-separated file containing the raw read counts for all samples across targeted regions.
+**Reads File (`canope.reads.tsv`)** *(Optional)*
+If you already have pre-computed read counts, you can provide a tab-separated file instead of letting CANOPE extract from BAMs. It must contain raw read counts for all samples across targeted regions.
 
 | chromosome | start | end | Sample1 | Sample2 | Sample3 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -127,22 +138,13 @@ The output is a tabular file containing the detected variations:
   coverage, log2(observed/expected) with NB confidence interval, and a
   z-score-vs-references panel (interactive version of the static PDF panel).
 
-
 ## Fast coverage extraction (megadepth, Windows-native)
 
 `data_utils.R` also has `get_coverage_from_bams_megadepth()` — a much faster
 alternative to the default `summarizeOverlaps()`-based extraction, for when
 `run_canope()` is pulling coverage straight from BAMs (i.e. no `reads_file`).
 
-```r
-BiocManager::install("megadepth")  
-library(megadepth); install_megadepth()
-source("data_utils.R")
-test_counts <- get_coverage_from_bams_megadepth("one_sample.bam", "panel.bed")
-head(test_counts)
-```
-
-Switch backends with one argument:
+Switch backends with one argument in your `config.yaml` or directly in `run_canope()`:
 
 ```r
 run_canope(
@@ -152,6 +154,7 @@ run_canope(
   megadepth_threads = 4
 )
 ```
+
 ## Optional legacy HMM engine (original CANOES)
 
 ```r
