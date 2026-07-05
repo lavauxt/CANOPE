@@ -1,0 +1,73 @@
+# =============================================================================
+# CANOPE Pipeline Configuration File
+# =============================================================================
+# GC content computation: either provide fasta_file + bed_file OR bsgenome_pkg + bed_file
+# fasta_file: "data/hg19.fa"   # Uncomment to use FASTA
+bsgenome_pkg: "BSgenome.Hsapiens.UCSC.hg19"   # Alternative: use BSgenome
+samples: "data/"                    # Directory containing .bam files
+bed_file: "data/test.bed"           # Target regions BED file
+
+# Output settings
+output_dir: "results"               # Directory for all output files
+output_prefix: "TEST"               # Prefix for output file names
+
+# Core HMM / CNV calling parameters
+modechrom: "A"                      # "A" (autosomes), "XX", or "XY"
+min_cor: 0.95                       # Minimum Spearman correlation for references
+p_value: 1e-10                      # HMM transition probability (lower = less sensitive)
+Tnum: 10                            # Expected targets per CNV (higher = fewer small events)
+D: 100000                           # Expected genomic span of a CNV (bp)
+numrefs: 30                         # Maximum number of reference samples to use
+homdel_mean: 0.2                    # Expected read count under homozygous deletion
+
+# HMM engine selection
+decode_method: "distance"           # "distance" or "stationary"
+engine: "new"                       # "new" or "legacy_canoes"
+
+# Coverage extraction (from BAMs)
+coverage_backend: "bioconductor"    # "bioconductor" or "megadepth"
+megadepth_op: "sum"                 # "sum" or "mean" (megadepth only)
+megadepth_threads: 1                # Threads per megadepth invocation
+
+# BED preprocessing (optional)
+bed_process: "STANDARD"                   # "NO", "STANDARD", or "REGEN"
+bed_process_args:                   # Extra args passed to process_bed_file()
+  genome_version: "hg19"
+  exon_sep: "[_()]"
+  gene_name_keep: "3"
+  auto_exon_number: false
+
+# QC thresholds
+qc_min_corr: 0.98
+qc_min_cov: 100
+qc_min_total_reads: 300000
+qc_max_exon_cv: 0.5
+
+# Quality / confidence scoring
+score_confidence: true
+confidence_args:
+  high_q_score: 50
+  med_q_score: 20
+  high_num_refs: 10
+  med_num_refs: 5
+  low_confidence_genes:
+    - "PMS2"
+    - "SMN1"
+    - "CYP2D6"
+    - "HBA1"
+    - "HBA2"
+    - "STRC"
+    - "CYP21A2"
+    - "GBA1"
+    - "CFTR"
+
+# Output flags
+run_qc_metrics: true
+generate_plots_flag: true
+pca_plot: true
+export_vcf: true
+vcf_per_sample: false
+report: true
+sample_qc: true
+exon_qc: true
+auto_reference: true

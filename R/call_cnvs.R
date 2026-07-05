@@ -96,6 +96,27 @@ call_cnvs <- function(
   if (length(setdiff(colnames(counts)[1:5], required_meta)) > 0)
     stop("First five columns must be: target, chromosome, start, end, gc")
 
+  # ============================================================
+  # 1. FORCE ALL SAMPLE COLUMNS TO NUMERIC (with proper NA detection)
+  # ============================================================
+  meta_cols <- c("target", "chromosome", "start", "end", "gc", "GENE", "mean")
+  sample_names <- setdiff(colnames(counts), meta_cols)
+  for (nm in sample_names) {
+    raw_vals <- counts[[nm]]
+    counts[[nm]] <- suppressWarnings(as.numeric(as.character(raw_vals)))
+    lost <- is.na(counts[[nm]]) & !is.na(raw_vals) & nzchar(as.character(raw_vals))
+    if (any(lost)) {
+      warning(sprintf(
+        "Column '%s' had %d non-numeric value(s) coerced to NA",
+        nm, sum(lost)
+      ), call. = FALSE)
+    }
+  }
+  if ("mean" %in% colnames(counts)) {
+    counts$mean <- as.numeric(counts$mean)
+  }
+  # ============================================================
+
   if (p <= 0 || Tnum <= 0 || D <= 0 || numrefs <= 0)
     stop("Parameters p, Tnum, D, and numrefs must all be positive")
 
@@ -158,15 +179,29 @@ call_cnvs <- function(
   if (length(reference_samples) < 3)
     stop("Too few valid reference samples for ", sample_name)
 
+  # ============================================================
+  # 2. NORMALISE REFERENCE SAMPLES – WITH SAFETY
+  # ============================================================
   samp_med <- median(counts[[sample_name]], na.rm = TRUE)
   for (nm in reference_samples) {
     ref_m <- median(counts[[nm]], na.rm = TRUE)
-    if (is.finite(ref_m) && ref_m > 0)
+    if (is.finite(ref_m) && ref_m > 0) {
+      counts[[nm]] <- as.numeric(counts[[nm]])
       counts[[nm]] <- round(counts[[nm]] * samp_med / ref_m)
+    }
   }
 
   b <- as.numeric(counts[[sample_name]])
+  # Force reference columns to be numeric before creating matrix A
+  for (nm in reference_samples) {
+    counts[[nm]] <- as.numeric(counts[[nm]])
+  }
   A <- as.matrix(counts[, reference_samples, drop = FALSE])
+  storage.mode(A) <- "numeric"  # ensure matrix is numeric
+
+  # ============================================================
+  # 3. NNLS WEIGHTING
+  # ============================================================
   set.seed(1L)
   boot_weights <- matrix(0, nrow = 50L, ncol = length(reference_samples))
   for (i in seq_len(50L)) {
@@ -178,10 +213,14 @@ call_cnvs <- function(
   sample_weights <- if (sum(weights) > 0) weights / sum(weights) else
     rep(1 / length(weights), length(weights))
 
+  # ============================================================
+  # 4. COMPUTE MEAN AND FILTER
+  # ============================================================
   counts$mean <- apply(
     counts[, reference_samples, drop = FALSE], 1,
     function(x) matrixStats::weightedMedian(x, w = sample_weights, na.rm = TRUE)
   )
+  counts$mean <- as.numeric(counts$mean)
 
   keep <- counts$mean >= 10 & is.finite(counts$mean) & counts[[sample_name]] >= 5
   counts <- counts[keep, , drop = FALSE]
@@ -197,8 +236,9 @@ call_cnvs <- function(
   })
   robust_var <- pmax(robust_var, counts$mean + 1)
 
-  test_counts <- pmax(round(counts[[sample_name]]), 0L)
-  ref_means <- pmax(round(counts$mean), 1L)
+  test_counts <- pmax(round(as.numeric(counts[[sample_name]])), 0L)
+  ref_means   <- pmax(round(as.numeric(counts$mean)), 1L)
+
   em_probs <- if (engine == "legacy_canoes") {
     legacy_emission_probs(test_counts, ref_means, robust_var, counts$target)
   } else {

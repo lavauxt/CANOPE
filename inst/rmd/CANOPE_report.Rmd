@@ -77,22 +77,14 @@ get_canope_plot_data <- function(call_row, counts, bed_file, models, refs, flank
   model_var  <- model_lookup(models[[sample]], "var_estimate", bed_file$target[exon_range])
 
   pseudocount   <- 0.5
-  # `test_counts` here (raw counts[]) is kept for the *display* coverage
-  # panel below (test_log / ref_cov), matching the raw-coverage panel in the
-  # static PDFs.
+  # Raw counts, kept only for the display coverage panel (test_log / ref_cov),
+  # matching the raw-coverage panel in the static PDFs.
   test_counts   <- counts[exon_range, sample]
 
-  # BUG FIX (depth-scale mismatch): the ratio/CI and z-score panels used to
-  # be computed from this same raw `test_counts`/raw reference columns of
-  # `counts`, compared against model_mean/model_var. But model_mean/
-  # model_var come from call_cnvs()'s *internally normalised* copy of the
-  # data (global median normalisation, then rescaling each reference to the
-  # test sample's own median) — a transform that never touched the raw
-  # `counts` saved to the RData workspace. Comparing raw counts to a
-  # normalised model therefore mixed two depth scales, which is why the
-  # test sample could land far outside the 95% band or many SDs from the
-  # references even with no real CNV. Use the model's own test_counts/
-  # ref_matrix instead — the exact values mean/var_estimate were fit on.
+  # The ratio/CI and z-score panels must use the model's own test_counts/
+  # ref_matrix (not raw `counts`), since model_mean/model_var were fit on
+  # call_cnvs()'s internally normalised data -- comparing raw counts against
+  # that normalised model would mix two depth scales.
   test_counts_model <- model_lookup(models[[sample]], "test_counts", bed_file$target[exon_range])
   expected_safe <- pmax(model_mean, 1) + pseudocount
 
@@ -107,20 +99,10 @@ get_canope_plot_data <- function(call_row, counts, bed_file, models, refs, flank
 
   exon_labels <- compute_exon_index(bed_file)[exon_range]
 
-  # --- Z-scores vs. references (additional panel beyond the ECHO report) ---
-  # BUG FIX (unstable per-target SD): the SD denominator used to be the raw
-  # sample SD across just the handful of reference columns in `ref_mat` (or
-  # an ad-hoc MAD fallback with a single reference), floored at an
-  # essentially-zero 1e-6. With only a few references that per-target SD is
-  # itself a noisy, low-df estimate, and any target where the references
-  # happened to cluster unusually tightly produced an enormous, spurious
-  # z-score for a trivial absolute deviation — the "z-score looks far more
-  # dramatic than the coverage panel" pattern. `var_estimate` is the same
-  # robust, properly-floored (MAD-based, floored at mean + 1) variance the
-  # ratio/NB-interval panel above already uses; reusing it here keeps all
-  # three panels consistent with each other and with what the model
-  # actually calls on, instead of each panel inventing its own variance
-  # estimate from a handful of samples.
+  # Z-scores vs. references. Uses the same robust, floored var_estimate as
+  # the ratio/NB-interval panel above (rather than a raw per-target SD across
+  # just the handful of references), so all panels agree with the model and
+  # with each other.
   ref_mat <- model_matrix_lookup(models[[sample]], "ref_matrix", bed_file$target[exon_range])
   z_means <- rowMeans(ref_mat, na.rm = TRUE)
   z_sds   <- sqrt(pmax(model_var, 1))
@@ -138,8 +120,7 @@ get_canope_plot_data <- function(call_row, counts, bed_file, models, refs, flank
   }))
 
   # Per-call diagnostic: does this window's background (non-called)
-  # coverage actually fit the model as well as the interval implies? See
-  # check_background_calibration() in canope_utils.R (README "Round 5").
+  # coverage fit the model as well as the interval implies?
   bg_calib <- check_background_calibration(ratio, lo, hi, exon_range %in% cnv_rows)
 
   list(
@@ -200,19 +181,9 @@ if (!is.null(params$qc_metrics) && is.data.frame(params$qc_metrics) && nrow(para
   missing_chrs <- params$qc_metrics[params$qc_metrics$Type == "Missing Chromosome", ]
   if (nrow(missing_chrs) > 0) {
     for (i in seq_len(nrow(missing_chrs))) {
-      # BUG FIX: this used to be a single multi-line cat(sprintf('\n      <div...'))
-      # call with each HTML line indented to match the surrounding R code (for
-      # readability). But results='asis' output goes straight into the
-      # Markdown source Pandoc then parses, and Pandoc's Markdown reader
-      # treats a line indented 4+ spaces as an INDENTED CODE BLOCK, not raw
-      # HTML — so every line of that div rendered as literal, HTML-escaped
-      # text inside a <pre><code> block instead of an actual styled alert
-      # box. Confirmed with an isolated reproduction (identical indented
-      # cat() content renders broken; the same content with no leading
-      # whitespace renders as real HTML) and cross-checked against the
-      # working style already used successfully elsewhere in this file (the
-      # confidence_recap chunk below), which never indents its HTML. Fixed
-      # by emitting each line via a separate cat() call starting at column 0.
+      # Each cat() call must start at column 0: results='asis' output goes
+      # straight into the Markdown source, and Pandoc treats an indented
+      # line (4+ spaces) as a code block rather than raw HTML.
       cat('<div class="alert alert-warning" role="alert">\n')
       cat('<h4 class="alert-heading" style="margin-top:0;font-weight:bold;"><i class="fa fa-exclamation-triangle"></i> Pipeline Warning</h4>\n')
       cat(sprintf('<p style="margin-bottom:0;">%s. <strong>Analysis for this chromosome has been skipped automatically.</strong></p>\n',
@@ -433,12 +404,12 @@ if (length(samples) == 0) {
           next
         }
 
-        # Per-call diagnostic (README "Round 5"): flags when the fraction of
-        # non-called exons in this window that fall outside the modelled
-        # 95% interval is statistically higher than the ~5% a well-calibrated
-        # interval implies. See check_background_calibration() in
-        # canope_utils.R for the full rationale. This is informational only
-        # — it doesn't change the call, the interval, or the confidence score.
+        # Per-call diagnostic: flags when the fraction of non-called exons in
+        # this window that fall outside the modelled 95% interval is
+        # statistically higher than the ~5% expected under a well-calibrated
+        # interval. Informational only -- doesn't change the call, interval,
+        # or confidence score. See check_background_calibration() in
+        # canope_utils.R.
         if (isTRUE(plot_data$bg_calibration$flag)) {
           cat("\n> \u26a0\ufe0f **Background calibration flag:** ",
               round(plot_data$bg_calibration$pct_outside), "% of non-called exons in this window (",

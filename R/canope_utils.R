@@ -65,15 +65,20 @@ canope_filter_chromosomes <- function(df, include = NULL, exclude = NULL) {
 
 #' Assign sequential exon numbers within each gene
 #'
-#' Sorts by chromosome → start → end then assigns 1..n per gene.
-#' Duplicate intervals (same chrom + start + end + gene) are removed.
+#' Numbers exons 1..n per gene in genomic order (chromosome, then start, then
+#' end), regardless of the row order of \code{bed_df}. Duplicate intervals
+#' (same chrom + start + end + gene) are removed. The returned data frame
+#' keeps the same row order as the input (minus any removed duplicates) —
+#' the genomic sort used for numbering is internal only, so callers can
+#' safely bind \code{exon_number} back onto \code{bed_df} (or any table with
+#' the same row identity) by position.
 #'
 #' @param bed_df Data frame with chromosome/Chr, start/Start, end/End, gene/Gene/GENE columns.
-#' @return The input data frame with an added \code{exon_number} integer column.
-#' @importFrom data.table := as.data.table setnames setorder .N
+#' @return The input data frame (original row order preserved) with an added
+#'   \code{exon_number} integer column.
+#' @importFrom data.table := as.data.table setnames setorder .N .I
 #' @export
 assign_exon_numbers_per_gene <- function(bed_df) {
-  # Detect column aliases
   chrom_col <- intersect(c("chromosome", "Chr", "CHROM"), names(bed_df))[1]
   start_col <- intersect(c("start", "Start", "START"), names(bed_df))[1]
   end_col   <- intersect(c("end", "End", "END"), names(bed_df))[1]
@@ -84,7 +89,9 @@ assign_exon_numbers_per_gene <- function(bed_df) {
   data.table::setnames(dt, c(chrom_col, start_col, end_col, gene_col),
                        c("._chrom", "._start", "._end", "._gene"))
 
-  # Remove duplicates
+  # Track original row position so input order can be restored after sorting.
+  dt[, ._orig_row := .I]
+
   dup_rows <- duplicated(dt, by = c("._chrom", "._start", "._end", "._gene"))
   if (any(dup_rows)) {
     warning(sprintf("Removed %d duplicate BED rows (same chrom, start, end, gene).",
@@ -92,14 +99,18 @@ assign_exon_numbers_per_gene <- function(bed_df) {
     dt <- dt[!dup_rows]
   }
 
-  # Sort genomically
+  # Sort genomically to compute exon numbers, then restore input row order
+  # below -- callers must be able to bind exon_number back onto bed_df (or
+  # any table sharing its row identity) purely by position.
   chrom_levels <- c(paste0("chr", c(1:22, "X", "Y", "M")), c(as.character(1:22), "X", "Y", "M"))
   dt[, .chrom_fac := factor(`._chrom`, levels = unique(c(chrom_levels, unique(`._chrom`))))]
   data.table::setorder(dt, .chrom_fac, `._start`, `._end`)
   dt[, .chrom_fac := NULL]
 
-  # Exon numbering within each gene (genomic order)
   dt[, exon_number := seq_len(.N), by = "._gene"]
+
+  data.table::setorder(dt, ._orig_row)
+  dt[, ._orig_row := NULL]
 
   data.table::setnames(dt, c("._chrom", "._start", "._end", "._gene"),
                        c(chrom_col, start_col, end_col, gene_col))
@@ -243,25 +254,16 @@ plot_coverage_pca <- function(counts, sample_names,
 
 #' Flag Background-Exon Calibration Issues for a CNV Call Window
 #'
-#' New in response to a real investigation (see README "Round 5"): checking
-#' a real report's data directly showed the test sample's own ratio at
-#' *non-called* ("background") exons in a plotted window falling outside
-#' the modelled 95% predictive interval far more often than the ~5% a
-#' well-calibrated interval implies — but concentrated entirely in specific
-#' calls, in a pattern (near-uniform, one-sided elevation across most of the
-#' window) much more consistent with real signal extending beyond the
-#' called boundary, an atypical reference match, or a technical/batch
-#' difference for that sample than with a generically miscalibrated
-#' interval. A blanket statistical correction was tested (Monte Carlo, see
-#' README) and rejected — it overcorrected the normal case. This makes that
-#' same per-call check a permanent, automatic part of the pipeline instead,
-#' so it doesn't require manually parsing plot data to notice: every call
-#' gets flagged (or not) using a real statistical test against the null.
+#' Tests whether the test sample's ratio at *non-called* ("background")
+#' exons in a plotted window falls outside the modelled 95% predictive
+#' interval more often than the ~5% a well-calibrated interval implies.
+#' A high background "outside" rate for a specific call can indicate real
+#' signal extending beyond the called boundary, an atypical reference
+#' match, or a technical/batch difference for that sample.
 #'
-#' This is a diagnostic flag, not a correction — it doesn't change the
-#' interval, the call, or the confidence score. It's meant to prompt a
-#' manual look at specific calls, the same way this issue was actually
-#' found.
+#' This is a diagnostic flag only — it doesn't change the interval, the
+#' call, or the confidence score. It's meant to prompt a manual look at
+#' specific calls.
 #'
 #' @param ratio Numeric vector of log2(observed/expected) for every exon in
 #'   the plotted window (background and affected together).

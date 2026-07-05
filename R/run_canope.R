@@ -2,12 +2,13 @@
 #'
 #' End-to-end wrapper: reads count/GC data, QC-filters samples and exons,
 #' optionally infers reference sets, runs per-sample HMM calling, and writes
-#' output CSV + RData + plots. Also orchestrates the ECHO-parity features
-#' added alongside this fix: BED preprocessing, CNV confidence scoring, QC
-#' metrics, PCA, VCF export, and an interactive HTML report.
+#' output CSV + RData + plots. Also orchestrates BED preprocessing, CNV
+#' confidence scoring, QC metrics, PCA, VCF export, and an interactive HTML
+#' report.
 #'
 #' @param gc_file            Character or NULL. Path to pre-computed GC table.
 #' @param fasta_file         Character or NULL. Path to genome FASTA (used with bed_file).
+#' @param bsgenome_pkg      Character or NULL. Name of a BSgenome package (e.g. "BSgenome.Hsapiens.UCSC.hg38") – used if \code{fasta_file} is not provided.
 #' @param reads_file         Character or NULL. Path to pre-computed counts table
 #'   (expected layout: \code{chromosome, start, end, GENE, <sample columns...>}).
 #' @param modechrom          Character. "A" (autosomes), "XX", or "XY".
@@ -94,7 +95,7 @@
 #'   \code{score_confidence = TRUE}).
 #' @export
 run_canope <- function(
-    gc_file = NULL, fasta_file = NULL, reads_file = NULL,
+    gc_file = NULL, fasta_file = NULL, bsgenome_pkg = NULL, reads_file = NULL,
     modechrom = "A", removeY = TRUE, samples = NULL,
     p_value = 1e-08, Tnum = 6, D = 100000,
     numrefs = 30, min_cor = NULL, homdel_mean = 0.2,
@@ -136,7 +137,7 @@ run_canope <- function(
 
   log_msg("INFO", "Preparing count matrix")
 
-  # ── BED preprocessing (optional, ECHO-parity feature) ──────────────────
+  # ── BED preprocessing (optional) ─────────────────────────────────────────
   if (!is.null(bed_file) && !identical(bed_process, "NO")) {
     processed_bed <- file.path(out_dir, "processed.bed")
     log_msg("INFO", sprintf("Running process_bed_file(mode = '%s') on %s", bed_process, bed_file))
@@ -160,7 +161,9 @@ run_canope <- function(
   samples_to_analyse <- sapply(samplesbams, clean_name, USE.NAMES = FALSE)
 
   if (!is.null(reads_file) && file.exists(reads_file)) {
-    canope.reads_un <- utils::read.table(reads_file, header = TRUE, check.names = FALSE)
+    canope.reads_un <- utils::read.table(reads_file, header = TRUE,
+                                         check.names = FALSE,
+                                         stringsAsFactors = FALSE)
     n_expected_meta <- 4L
     if (ncol(canope.reads_un) - n_expected_meta != length(samples_to_analyse)) {
       stop(sprintf(
@@ -205,13 +208,33 @@ run_canope <- function(
     canope.reads_un <- cbind(coords, counts_df)
   }
 
+  # ===== FIX: Force all sample columns to numeric =====
+  meta_cols <- c("chromosome", "start", "end", "GENE", "target", "gc")
+  sample_cols <- setdiff(colnames(canope.reads_un), meta_cols)
+  for (col in sample_cols) {
+    raw_vals <- canope.reads_un[[col]]
+    canope.reads_un[[col]] <- suppressWarnings(as.numeric(as.character(raw_vals)))
+    lost <- is.na(canope.reads_un[[col]]) & !is.na(raw_vals) & nzchar(as.character(raw_vals))
+    if (any(lost)) {
+      warning(sprintf("Column '%s' had %d non-numeric value(s) coerced to NA", col, sum(lost)), call. = FALSE)
+    }
+  }
+  # ====================================================
+
   # ---- GC content --------------------------------------------
   if (!is.null(fasta_file) && !is.null(bed_file)) {
-    datagc <- compute_gc_from_bed(fasta_file = fasta_file, bed_input = bed_file)
+    log_msg("INFO", "Computing GC content from FASTA file")
+    datagc <- compute_gc_from_fasta(fasta_file = fasta_file, bed_input = bed_file)
+  } else if (!is.null(bsgenome_pkg) && !is.null(bed_file)) {
+    if (!requireNamespace(bsgenome_pkg, quietly = TRUE))
+      stop("BSgenome package '", bsgenome_pkg, "' is not installed.")
+    log_msg("INFO", sprintf("Computing GC content from BSgenome package '%s'", bsgenome_pkg))
+    datagc <- compute_gc_from_bed(bsgenome_pkg = bsgenome_pkg, bed_input = bed_file)
   } else if (!is.null(gc_file) && file.exists(gc_file)) {
+    log_msg("INFO", "Using pre‑computed GC file")
     datagc <- utils::read.table(gc_file, header = TRUE)
   } else {
-    stop("ERROR: Provide 'gc_file' OR ('fasta_file' and 'bed_file').")
+    stop("ERROR: Provide either (fasta_file + bed_file) OR (bsgenome_pkg + bed_file) OR a pre‑computed gc_file.")
   }
 
   if (!"GC_CONTENT" %in% colnames(datagc)) {
@@ -231,7 +254,9 @@ run_canope <- function(
     gc <- gc / 100
   }
 
-  all_sample_names <- colnames(canope.reads_un)[seq(5, ncol(canope.reads_un))]
+  # ---- BUG FIX: Use samples_to_analyse, not column offset ----
+  all_sample_names <- samples_to_analyse
+  # -----------------------------------------------------------
 
   canope.reads_un <- cbind(
     target = seq_len(nrow(canope.reads_un)),
@@ -261,6 +286,17 @@ run_canope <- function(
     c(samples_to_analyse, refsample_names) else all_sample_names
 
   canope.reads <- canope.reads_un[, c("target", "gc", "GENE", "chromosome", "start", "end", target_samples)]
+
+  # ===== SAFETY: ensure all sample columns are numeric (again) =====
+  for (nm in target_samples) {
+    raw_vals <- canope.reads[[nm]]
+    canope.reads[[nm]] <- as.numeric(as.character(raw_vals))
+    lost <- is.na(canope.reads[[nm]]) & !is.na(raw_vals) & nzchar(as.character(raw_vals))
+    if (any(lost)) {
+      warning(sprintf("Column '%s' had %d non-numeric value(s) coerced to NA", nm, sum(lost)), call. = FALSE)
+    }
+  }
+  # ================================================================
 
   has_chr_prefix <- any(grepl("^chr", as.character(canope.reads$chromosome)))
   chrX_label <- if (has_chr_prefix) "chrX" else "X"
@@ -351,9 +387,6 @@ run_canope <- function(
   }
 
   samples_to_analyse <- intersect(samples_to_analyse, colnames(canope.reads))
-  for (ts in target_samples)
-    if (ts %in% colnames(canope.reads))
-      canope.reads[[ts]] <- pmax(round(canope.reads[[ts]]), 0L)
 
   all_cnvs <- list()
   models_list <- list()
@@ -391,7 +424,7 @@ run_canope <- function(
   final_cnvs <- if (length(all_cnvs) > 0) do.call(rbind, all_cnvs) else data.frame()
   rownames(final_cnvs) <- NULL
 
-  # ── CNV confidence scoring (ECHO-parity feature) ────────────────────────
+  # ── CNV confidence scoring ───────────────────────────────────────────────
   if (score_confidence && nrow(final_cnvs) > 0) {
     log_msg("INFO", "Scoring CNV confidence")
     final_cnvs <- do.call(score_canope_confidence, c(list(cnv_calls = final_cnvs), confidence_args))
@@ -424,7 +457,7 @@ run_canope <- function(
     }
   }
 
-  # ── QC metrics (ECHO-parity feature) ────────────────────────────────────
+  # ── QC metrics ───────────────────────────────────────────────────────────
   qc_metrics_path <- NULL
   if (run_qc_metrics) {
     if (is.null(qc_output_file)) qc_output_file <- file.path(out_dir, "CANOPE_QC_metrics.tsv")
@@ -441,7 +474,7 @@ run_canope <- function(
     }, error = function(e) log_msg("WARNING", "QC metrics step failed: ", conditionMessage(e)))
   }
 
-  # ── PCA of coverage profiles (ECHO-parity feature) ──────────────────────
+  # ── PCA of coverage profiles ─────────────────────────────────────────────
   if (pca_plot && length(target_samples) >= 3) {
     if (is.null(pca_output_file)) pca_output_file <- file.path(out_dir, "CANOPE_PCA.pdf")
     log_msg("INFO", "Generating coverage PCA plot")
@@ -457,7 +490,7 @@ run_canope <- function(
     )
   }
 
-  # ── VCF export (ECHO-parity feature) ────────────────────────────────────
+  # ── VCF export ───────────────────────────────────────────────────────────
   if (export_vcf && nrow(final_cnvs) > 0) {
     if (is.null(vcf_output)) vcf_output <- file.path(out_dir, "CANOPE_calls.vcf")
     log_msg("INFO", "Exporting CNV calls to VCF")
@@ -474,7 +507,7 @@ run_canope <- function(
     }
   }
 
-  # ── Interactive HTML report (ECHO-parity feature) ───────────────────────
+  # ── Interactive HTML report ──────────────────────────────────────────────
   if (report && nrow(final_cnvs) > 0) {
     if (is.null(report_output_dir)) report_output_dir <- file.path(out_dir, "report")
     log_msg("INFO", "Rendering interactive HTML report")

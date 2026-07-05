@@ -5,17 +5,18 @@ Version: 0.1.0
 Author: TL
 Maintainer: TL <lavauxt@gmail.com>
 Description: An R package for detecting copy number variations (CNVs) in targeted and exome sequencing data using low-variance reference sample selection and hidden Markov modeling.
-License: MIT
+License: GPL-3
 Encoding: UTF-8
 LazyData: true
 Depends: R (>= 4.0.0)
 Imports: 
     dplyr,
     nnls,
-    Hmisc,
-    mgcv,
     stats,
     utils,
+    tools,
+    grDevices,
+    grid,
     Biostrings,
     rtracklayer,
     GenomicRanges,
@@ -24,8 +25,26 @@ Imports:
     Rsamtools,
     GenomicAlignments,
     SummarizedExperiment,
+    IRanges,
+    S4Vectors,
     ggplot2,
     matrixStats,
     HMM,
     data.table
+Suggests:
+    GenomicFeatures,
+    TxDb.Hsapiens.UCSC.hg19.knownGene,
+    TxDb.Hsapiens.UCSC.hg38.knownGene,
+    AnnotationDbi,
+    org.Hs.eg.db,
+    megadepth,
+    BiocManager,
+    ggrepel,
+    rmarkdown,
+    knitr,
+    tidyr,
+    htmltools,
+    kableExtra,
+    DT,
+    plotly
 RoxygenNote: 8.0.0

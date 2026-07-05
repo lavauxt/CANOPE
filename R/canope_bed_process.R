@@ -64,9 +64,14 @@ process_bed_file <- function(input_bed, output_bed, bed_process = "STANDARD",
     g_clean <- gsub("\\s*\\(.*?\\)", "", as.character(name_vec))
     g_clean <- sub("^([^,]+),.*$", "\\1", g_clean)
 
+    # ---- FIX: Proper exon number extraction with length matching ----
     exon_matches <- regexpr("(_ex|ex)([0-9]+)", g_clean)
-    exon_numbers <- as.integer(gsub("[^0-9]", "", regmatches(g_clean, exon_matches)))
-    exon_numbers[is.na(exon_numbers) | exon_matches == -1] <- NA_integer_
+    exon_numbers <- rep(NA_integer_, length(g_clean))
+    has_match <- exon_matches != -1
+    exon_numbers[has_match] <- as.integer(
+      gsub("[^0-9]", "", regmatches(g_clean, exon_matches))
+    )
+    # ----------------------------------------------------------------
 
     parts_list <- strsplit(g_clean, split = split_pat, fixed = use_fixed)
 

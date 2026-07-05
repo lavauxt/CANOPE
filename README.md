@@ -22,7 +22,7 @@ By employing low-variance reference sample selection, Negative Binomial emission
 * **Smart Normalization:** Automatically selects the most highly correlated reference samples (up to a user-defined threshold) to build an expected baseline via Non-Negative Least Squares (NNLS).
 * **Robust HMM Engine:** Implements a Hidden Markov Model with dynamically computed transition probabilities (based on genomic distance) and Negative Binomial emission probabilities.
 * **Native Visualization:** Generates comprehensive PDF reports with tracking plots, coverage ratios, and specific gene annotations completely independent of heavy third-party plotting frameworks.
-* **GC Content Correction:** Built-in tools (`compute_gc_content`) to directly parse GC fraction from FASTA files and correct GC-bias natively.
+* **GC Content Correction:** Built-in tools (`compute_gc_from_bed`) to directly parse GC fraction from FASTA files and correct GC-bias natively.
 
 ## Installation
 
@@ -37,8 +37,15 @@ devtools::install_github("lavauxt/CANOPE")
 ```
 
 ### Dependencies
-CANOPE is lightweight by design and relies on the following R packages:
-`dplyr`, `nnls`, `Hmisc`, `mgcv`, `stats`, `utils`, `ggplot2` (for plotting).
+Core: `dplyr`, `nnls`, `stats`, `utils`, `tools`, `data.table`, `matrixStats`,
+`HMM`, `ggplot2`, and the Bioconductor packages `Biostrings`, `rtracklayer`,
+`GenomicRanges`, `GenomeInfoDb`, `BiocGenerics`, `Rsamtools`,
+`GenomicAlignments`, `SummarizedExperiment`, `IRanges`, `S4Vectors`.
+
+Optional (only needed for specific features): `megadepth` (fast BAM
+coverage), `GenomicFeatures` + a `TxDb.Hsapiens.UCSC.*` package + `org.Hs.eg.db`
+(BED `REGEN` mode), `ggrepel` (nicer PCA labels), and `rmarkdown`, `knitr`,
+`DT`, `plotly`, `tidyr`, `htmltools`, `kableExtra` (interactive HTML report).
 
 ## Quick Start
 
@@ -76,7 +83,7 @@ generate_plots(
 ## Input File Formats
 
 **GC File (`gc.tsv`)**
-Must contain a column exactly named `GC_CONTENT` as the 4th column. *Tip: Use CANOPE's `compute_gc_content(fasta_file)` function to generate this easily.*
+Must contain a column exactly named `GC_CONTENT` as the 4th column. *Tip: Use CANOPE's `compute_gc_from_bed(fasta_file, bed_input)` function to generate this easily.*
 
 **Reads File (`canope.reads.tsv`)**
 Tab-separated file containing the raw read counts for all samples across targeted regions.
@@ -90,17 +97,19 @@ Tab-separated file containing the raw read counts for all samples across targete
 
 The output is a tabular file containing the detected variations:
 
-* `Chrom`, `Start`, `End`: Genomic coordinates of the CNV.
+* `CHR`, `INTERVAL`, `MID_BP`: Genomic coordinates of the CNV.
 * `CNV`: Type of variant (`DEL` for deletion, `DUP` for duplication).
 * `SAMPLE`: The sample in which the event was detected.
 * `KB`: Size of the variation in kilobases.
-* `TARGETS`: The indices of the targeted exons spanning the event.
+* `TARGETS`: The target ID range spanning the event (e.g. `42..47`).
 * `NUM_TARG`: Total number of contiguous targets involved.
+* `GENE`: Gene name(s) overlapping the call.
 * `MLCN`: Most Likely Copy Number (e.g., 1 for heterozygous deletion, 3 for duplication).
 * `Q_SOME`: Phred-scaled quality score of the CNV call.
+* `NUM_REFS`, `REF_SAMPLES`: Number and names of reference samples used.
+* `Confidence`, `CN_label`: Added when `score_confidence = TRUE` (default).
 
-
-## New features
+## Additional Features
 
 - **BED preprocessing** (`canope_bed_process.R`) — `STANDARD`/`REGEN`/`NO`
   modes, gene/exon annotation from panel files or RefSeq.
@@ -115,9 +124,8 @@ The output is a tabular file containing the detected variations:
 - **Interactive HTML report** (`CANOPE_report.Rmd` /
   `canope_report.R::generate_canope_report()`) — QC table, PCA, per-sample
   CNV tables colour-coded by confidence, and three plotly panels per call:
-  coverage, log2(observed/expected) with NB confidence interval, **and a
-  new z-score-vs-references panel** (the same z-score concept that was
-  already in your static PDFs, now also interactive).
+  coverage, log2(observed/expected) with NB confidence interval, and a
+  z-score-vs-references panel (interactive version of the static PDF panel).
 
 
 ## Fast coverage extraction (megadepth, Windows-native)

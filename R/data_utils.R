@@ -40,59 +40,306 @@ targets_to_rows <- function(target_ids, target_vector) {
   rows
 }
 
-#' Compute GC Content Specifically from BED Regions
+#' Compute GC Content from a FASTA File and a BED File
 #'
-#' @param fasta_file Path to an indexed (or indexable) reference FASTA.
-#' @param bed_input  Path to a BED file, or a data frame with chromosome/start/end columns.
+#' Extracts per‑region GC fraction using a FASTA genome file (must be indexed).
+#'
+#' @param fasta_file Path to a FASTA file (with a `.fai` index).
+#' @param bed_input  Path to a BED file, or a data frame with columns
+#'   \code{chromosome, start, end} (and optionally \code{GENE}).
 #' @return Data frame: chromosome, start, end, GENE, GC_CONTENT.
 #' @export
-compute_gc_from_bed <- function(fasta_file, bed_input) {
+compute_gc_from_fasta <- function(fasta_file, bed_input) {
+  if (!requireNamespace("Rsamtools", quietly = TRUE))
+    stop("Package 'Rsamtools' is required.")
+  if (!requireNamespace("Biostrings", quietly = TRUE))
+    stop("Package 'Biostrings' is required.")
+
+  # ---- Read BED ----
   if (is.character(bed_input) && length(bed_input) == 1 && file.exists(bed_input)) {
     bed_df <- utils::read.table(bed_input, header = FALSE, stringsAsFactors = FALSE)
   } else if (is.data.frame(bed_input)) {
     bed_df <- bed_input
   } else {
-    stop("ERROR: 'bed_input' must be a valid file path string or a data.frame.")
+    stop("'bed_input' must be a BED file path or a data frame.")
+  }
+
+  # Ensure required columns
+  if (all(c("V1", "V2", "V3") %in% colnames(bed_df))) {
+    colnames(bed_df)[1:3] <- c("chromosome", "start", "end")
+  }
+  if (!all(c("chromosome", "start", "end") %in% colnames(bed_df)))
+    stop("BED must contain chromosome, start, end columns.")
+
+  # Sort
+  if (requireNamespace("gtools", quietly = TRUE)) {
+    bed_df <- bed_df[gtools::mixedorder(bed_df$chromosome), ]
+  } else {
+    bed_df <- bed_df[order(bed_df$chromosome, bed_df$start), ]
+  }
+
+  # ---- Open FASTA ----
+  fa <- Rsamtools::FaFile(fasta_file)
+  if (!file.exists(Rsamtools::index(fa)))
+    stop("FASTA index (.fai) not found. Please run 'samtools faidx' on ", fasta_file)
+
+  fa_seqnames <- as.character(GenomeInfoDb::seqnames(GenomicRanges::seqinfo(fa)))
+
+  # ---- Map BED chromosome names to FASTA names ----
+  bed_chroms <- unique(bed_df$chromosome)
+  chrom_map <- setNames(rep(NA_character_, length(bed_chroms)), bed_chroms)
+
+  for (bc in bed_chroms) {
+    if (bc %in% fa_seqnames) {
+      chrom_map[bc] <- bc
+    } else {
+      bc_no_chr <- sub("^chr", "", bc)
+      if (bc_no_chr %in% fa_seqnames) {
+        chrom_map[bc] <- bc_no_chr
+      } else {
+        bc_chr <- paste0("chr", bc)
+        if (bc_chr %in% fa_seqnames) {
+          chrom_map[bc] <- bc_chr
+        } else {
+          # Try numeric mapping for X/Y/M
+          bc_num <- suppressWarnings(as.numeric(bc))
+          if (!is.na(bc_num)) {
+            if (bc_num == 23 && "X" %in% fa_seqnames) chrom_map[bc] <- "X"
+            else if (bc_num == 24 && "Y" %in% fa_seqnames) chrom_map[bc] <- "Y"
+            else if (bc_num == 25 && "M" %in% fa_seqnames) chrom_map[bc] <- "M"
+          }
+        }
+      }
+    }
+  }
+
+  unmapped <- names(chrom_map)[is.na(chrom_map)]
+  if (length(unmapped) > 0) {
+    message("[WARNING] Dropping chromosomes not found in FASTA: ",
+            paste(unmapped, collapse = ", "))
+    bed_df <- bed_df[!bed_df$chromosome %in% unmapped, ]
+    chrom_map <- chrom_map[setdiff(names(chrom_map), unmapped)]
+  }
+
+  if (nrow(bed_df) == 0) stop("No BED regions remain after chromosome filtering.")
+
+  # ---- Compute GC ----
+  gc_vals <- numeric(nrow(bed_df))
+  gene_names <- if ("GENE" %in% colnames(bed_df)) as.character(bed_df$GENE) else rep(NA, nrow(bed_df))
+
+  for (i in seq_len(nrow(bed_df))) {
+    chrom <- bed_df$chromosome[i]
+    start <- bed_df$start[i] + 1L   # BED is 0‑based
+    end   <- bed_df$end[i]
+    fa_chrom <- chrom_map[chrom]
+
+    tryCatch({
+      gr <- GenomicRanges::GRanges(seqnames = fa_chrom,
+                                   ranges = IRanges::IRanges(start = start, end = end))
+      seqs <- Biostrings::getSeq(fa, gr)
+      if (length(seqs) > 0 && Biostrings::width(seqs)[1] > 0) {
+        gc_vals[i] <- Biostrings::letterFrequency(seqs, letters = "GC", as.prob = TRUE)[1]
+      } else {
+        gc_vals[i] <- NA_real_
+      }
+    }, error = function(e) {
+      message("[WARNING] Failed to extract sequence for ", chrom, ":", start, "-", end)
+      gc_vals[i] <<- NA_real_
+    })
+  }
+
+  valid <- !is.na(gc_vals)
+  if (sum(valid) == 0) stop("All GC computations failed.")
+  if (sum(!valid) > 0) {
+    message("[WARNING] Dropped ", sum(!valid), " region(s) with failed GC computation.")
+    bed_df <- bed_df[valid, , drop = FALSE]
+    gc_vals <- gc_vals[valid]
+    gene_names <- gene_names[valid]
+  }
+
+  data.frame(
+    chromosome = bed_df$chromosome,
+    start      = bed_df$start,
+    end        = bed_df$end,
+    GENE       = gene_names,
+    GC_CONTENT = as.numeric(gc_vals),
+    stringsAsFactors = FALSE
+  )
+}
+
+#' Compute GC Content Specifically from BED Regions using BSgenome
+#'
+#' @param bsgenome_pkg Character string naming the BSgenome package to use 
+#'   (e.g., "BSgenome.Hsapiens.UCSC.hg38" or "BSgenome.Hsapiens.UCSC.hg19").
+#' @param bed_input  Path to a BED file, or a data frame with chromosome/start/end columns.
+#' @return Data frame: chromosome, start, end, GENE, GC_CONTENT.
+#' @export
+compute_gc_from_bed <- function(bsgenome_pkg, bed_input) {
+  # ---- 0. Load the BSgenome package ----
+  if (!is.character(bsgenome_pkg) || length(bsgenome_pkg) != 1) {
+    stop("[ERROR] 'bsgenome_pkg' must be a single character string.")
+  }
+  
+  if (!requireNamespace(bsgenome_pkg, quietly = TRUE)) {
+    stop(sprintf(
+      "[ERROR] The package '%s' is not installed. Please install it via BiocManager::install('%s').", 
+      bsgenome_pkg, bsgenome_pkg
+    ))
+  }
+  
+  # Retrieve the actual BSgenome object dynamically
+  genome_obj <- getExportedValue(bsgenome_pkg, bsgenome_pkg)
+  
+  # ---- 1. Read and sort the BED input ----
+  if (is.character(bed_input) && length(bed_input) == 1 && file.exists(bed_input)) {
+    bed_df <- utils::read.table(bed_input, header = FALSE, stringsAsFactors = FALSE)
+  } else if (is.data.frame(bed_input)) {
+    bed_df <- bed_input
+  } else {
+    stop("[ERROR] 'bed_input' must be a valid file path string or a data.frame.")
   }
 
   if (all(c("V1", "V2", "V3") %in% colnames(bed_df))) {
     colnames(bed_df)[1:3] <- c("chromosome", "start", "end")
   }
 
+  # Sort BED by chromosome then start
+  if (requireNamespace("gtools", quietly = TRUE)) {
+    bed_df <- bed_df[gtools::mixedorder(bed_df$chromosome), ]
+    bed_df <- bed_df[order(bed_df$chromosome, bed_df$start), ]
+  } else {
+    bed_df <- bed_df[order(bed_df$chromosome, bed_df$start), ]
+  }
+  message("[INFO] BED regions sorted by chromosome and start.")
+
+  # ---- 2. Create GRanges (CRITICAL: BED is 0-based!) ----
   bed <- GenomicRanges::makeGRangesFromDataFrame(
     bed_df,
     start.field = "start",
     end.field = "end",
     seqnames.field = "chromosome",
-    keep.extra.columns = TRUE
+    keep.extra.columns = TRUE,
+    starts.in.df.are.0based = TRUE    # <-- FIX: BED uses 0-based start
   )
 
-  if (!file.exists(paste0(fasta_file, ".fai"))) {
-    Rsamtools::indexFa(fasta_file)
+  # ---- 3. BSgenome sequence info and chromosome mapping ----
+  genome_seqinfo <- GenomeInfoDb::seqinfo(genome_obj)
+  fasta_chroms <- GenomeInfoDb::seqnames(genome_seqinfo)
+
+  # Map BED chromosome names to BSgenome names
+  bed_chroms <- GenomeInfoDb::seqlevels(bed)
+  chrom_map <- setNames(rep(NA_character_, length(bed_chroms)), bed_chroms)
+
+  for (bc in bed_chroms) {
+    if (bc %in% fasta_chroms) {
+      chrom_map[bc] <- bc
+      next
+    }
+    bc_no_chr <- sub("^chr", "", bc)
+    if (bc_no_chr %in% fasta_chroms) {
+      chrom_map[bc] <- bc_no_chr
+      next
+    }
+    bc_chr <- paste0("chr", bc)
+    if (bc_chr %in% fasta_chroms) {
+      chrom_map[bc] <- bc_chr
+      next
+    }
+    bc_num <- suppressWarnings(as.numeric(bc))
+    if (!is.na(bc_num)) {
+      if (bc_num == 23 && "X" %in% fasta_chroms) {
+        chrom_map[bc] <- "X"
+        next
+      }
+      if (bc_num == 24 && "Y" %in% fasta_chroms) {
+        chrom_map[bc] <- "Y"
+        next
+      }
+      if (bc_num == 25 && "M" %in% fasta_chroms) {
+        chrom_map[bc] <- "M"
+        next
+      }
+    }
   }
 
-  genome_fa <- Rsamtools::FaFile(fasta_file)
-  genome_seqinfo <- GenomeInfoDb::seqinfo(genome_fa)
-  valid_seqnames <- GenomeInfoDb::seqnames(genome_seqinfo)
-
-  bed <- GenomeInfoDb::keepSeqlevels(bed, intersect(GenomeInfoDb::seqlevels(bed), valid_seqnames), pruning.mode = "coarse")
-
-  region_seqs <- Biostrings::getSeq(genome_fa, bed)
-  gc_freq <- Biostrings::letterFrequency(region_seqs, letters = "GC", as.prob = TRUE)
-
-  gene_names <- if (!is.null(bed$name)) {
-    as.character(bed$name)
-  } else {
-    rep(NA, length(bed))
+  # Remove unmapped regions and drop unused seqlevels
+  unmapped <- names(chrom_map)[is.na(chrom_map)]
+  if (length(unmapped) > 0) {
+    message("[WARNING] Dropping chromosomes not found in BSgenome: ",
+            paste(unmapped, collapse = ", "))
+    keep <- !as.character(GenomeInfoDb::seqnames(bed)) %in% unmapped
+    bed <- bed[keep, ]
+    bed <- GenomeInfoDb::dropSeqlevels(bed, unmapped)
+    chrom_map <- chrom_map[setdiff(names(chrom_map), unmapped)]
   }
 
-  return(data.frame(
+  if (length(bed) == 0) stop("[ERROR] No BED regions remain after chromosome filtering.")
+
+  # Rename seqlevels to match BSgenome
+  new_levels <- chrom_map[GenomeInfoDb::seqlevels(bed)]
+  if (any(is.na(new_levels))) {
+    stop("[ERROR] Internal error: some seqlevels are NA after mapping. Check mapping logic.")
+  }
+  GenomeInfoDb::seqlevels(bed) <- new_levels
+
+  # Keep only seqlevels that are actually in the BSgenome
+  keep_levels <- intersect(GenomeInfoDb::seqlevels(bed), fasta_chroms)
+  if (length(keep_levels) == 0) {
+    stop("[ERROR] No BED regions share seqlevels with the BSgenome.")
+  }
+  bed <- GenomeInfoDb::keepSeqlevels(bed, keep_levels, pruning.mode = "coarse")
+
+  # ---- 4. GC content extraction ----
+  gc_freq <- numeric(length(bed))
+  gene_names <- if (!is.null(bed$name)) as.character(bed$name) else rep(NA, length(bed))
+
+  for (i in seq_along(bed)) {
+    region <- bed[i]
+    seq_chrom <- as.character(GenomeInfoDb::seqnames(region))
+    seq_start <- BiocGenerics::start(region)
+    seq_end   <- BiocGenerics::end(region)
+
+    tryCatch({
+      seqs <- Biostrings::getSeq(genome_obj, region)  # returns DNAStringSet from BSgenome
+      
+      # Check that we have at least one non-empty sequence
+      if (length(seqs) > 0 && all(Biostrings::width(seqs) > 0)) {
+        # Use the whole DNAStringSet – avoids S4 coercion issues
+        gc_freq[i] <- Biostrings::letterFrequency(seqs, letters = "GC", as.prob = TRUE)[1]
+      } else {
+        message(sprintf("[WARNING] Empty sequence for %s:%d-%d", seq_chrom, seq_start, seq_end))
+        gc_freq[i] <- NA_real_
+      }
+    }, error = function(e) {
+      message(sprintf(
+        "[WARNING] Failed to read sequence for %s:%d-%d: %s",
+        seq_chrom, seq_start, seq_end, conditionMessage(e)
+      ))
+      gc_freq[i] <<- NA_real_
+    })
+  }
+
+  # Drop regions with NA GC content
+  valid <- !is.na(gc_freq)
+  if (sum(valid) == 0) {
+    stop("[ERROR] All GC content computations failed. Check that the BSgenome ",
+         "contains the positions in your BED file.")
+  }
+  if (sum(!valid) > 0) {
+    message(sprintf("[WARNING] Dropped %d target(s) with failed GC computation.", sum(!valid)))
+    bed <- bed[valid]
+    gc_freq <- gc_freq[valid]
+    gene_names <- gene_names[valid]
+  }
+
+  data.frame(
     chromosome = as.character(GenomeInfoDb::seqnames(bed)),
     start      = BiocGenerics::start(bed),
     end        = BiocGenerics::end(bed),
     GENE       = gene_names,
-    GC_CONTENT = as.numeric(gc_freq)
-  ))
+    GC_CONTENT = as.numeric(gc_freq),
+    stringsAsFactors = FALSE
+  )
 }
 
 #' Get Read Coverage from BAM files
@@ -141,16 +388,6 @@ get_coverage_from_bams <- function(bam_files, bed_input, single_end = NULL) {
 
 #' Parse a Single Megadepth \code{*.annotation.tsv} File
 #'
-#' Internal helper, factored out from \code{\link{get_coverage_from_bams_megadepth}}
-#' so the parsing logic can be unit-tested independently of actually running the
-#' megadepth binary. Megadepth's \code{--annotation <bed>} mode writes one row
-#' per input BED region, in BED order when \code{--keep-order} is used; the
-#' last column is always the summary statistic (\code{sum} or \code{mean}
-#' coverage depending on \code{--op}), with the first three columns being the
-#' BED region itself (\code{chrom, start, end}). This mirrors the column
-#' layout documented by the Bioconductor \code{megadepth} package's own
-#' \code{read_coverage()} (\code{chr, start, end, score}).
-#'
 #' @param ann_file Path to a \code{*.annotation.tsv} file written by megadepth.
 #' @param n_expected Expected row count (the number of BED targets); used only
 #'   to produce a clear error if the file doesn't match, since a silent length
@@ -181,43 +418,6 @@ get_coverage_from_bams <- function(bam_files, bed_input, single_end = NULL) {
 
 
 #' Get Per-Target Coverage from BAM Files via Megadepth (fast; native Windows binary)
-#'
-#' An alternative, much faster backend for the same job as
-#' \code{\link{get_coverage_from_bams}}: per-target read coverage for a panel
-#' of BAM files. Shells out to the compiled \code{megadepth} tool (Wilks
-#' \emph{et al.} 2021) instead of \code{GenomicAlignments::summarizeOverlaps()}.
-#'
-#' \strong{Why megadepth specifically:} of the three fast depth tools commonly
-#' suggested for this (mosdepth, megadepth, PanDepth), megadepth is the only
-#' one with an officially supported, prebuilt Windows x86-64 binary (confirmed
-#' in its Bioinformatics paper and Bioconductor build reports); mosdepth and
-#' PanDepth are Linux/macOS-only upstream and need WSL2 on Windows. The
-#' Bioconductor \code{megadepth} package's \code{install_megadepth()} downloads
-#' the correct binary for whatever OS R is running on, including Windows, so
-#' nothing needs to be compiled or manually placed on PATH.
-#'
-#' \strong{Note on what's being measured:} megadepth (like mosdepth) reports
-#' base-level \emph{coverage} over each region (summed or averaged per-base
-#' depth), not a "fragment/read count" in the \code{summarizeOverlaps(mode =
-#' "Union")} sense. For CNV calling this is fine -- everything downstream in
-#' CANOPE (GC correction, reference-panel normalisation, the HMM's relative
-#' emission probabilities) operates on relative deviations across samples and
-#' targets, not on read counts being a literal Poisson count of fragments --
-#' but the two are not numerically identical, so don't mix coverage-derived
-#' and summarizeOverlaps-derived counts for the same target in the same run.
-#'
-#' \strong{Verification status:} the CLI contract this function relies on
-#' (\code{--annotation}, \code{--op}, \code{--no-annotation-stdout},
-#' \code{--keep-order}, and the resulting \code{<prefix>.annotation.tsv}
-#' column layout) is documented in megadepth's own README and matches the
-#' column layout (\code{chr, start, end, score}) used by the Bioconductor
-#' package's \code{read_coverage()}. The output-parsing logic
-#' (\code{.parse_megadepth_annotation()}) is unit-tested against that
-#' documented schema. The actual binary was \emph{not} exercised end-to-end
-#' in the environment this was written in (no network path to the GitHub
-#' release asset host from that sandbox), so please run the validation
-#' snippet in the package README/your own one BAM before trusting it for a
-#' full cohort -- CLI flags have shifted across megadepth releases before.
 #'
 #' @param bam_files    Character vector of BAM file paths.
 #' @param bed_input    Path to a BED file of target regions (chrom, start, end, ...).

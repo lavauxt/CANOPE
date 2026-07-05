@@ -21,6 +21,12 @@ hmm_params <- function(
     span_bp = 100000,
     prior_abnormal = prior_cnv
 ) {
+  # Force numeric mode (YAML often parses 1e-08 as a string)
+  p <- as.numeric(p)
+  expected_targets <- as.numeric(expected_targets)
+  span_bp <- as.numeric(span_bp)
+  prior_abnormal <- as.numeric(prior_abnormal)
+
   stopifnot(p > 0, expected_targets > 0, span_bp > 0, prior_abnormal > 0)
   structure(
     list(
