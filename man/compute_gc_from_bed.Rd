@@ -2,12 +2,13 @@
 % Please edit documentation in R/data_utils.R
 \name{compute_gc_from_bed}
 \alias{compute_gc_from_bed}
-\title{Compute GC Content Specifically from BED Regions}
+\title{Compute GC Content Specifically from BED Regions using BSgenome}
 \usage{
-compute_gc_from_bed(fasta_file, bed_input)
+compute_gc_from_bed(bsgenome_pkg, bed_input)
 }
 \arguments{
-\item{fasta_file}{Path to an indexed (or indexable) reference FASTA.}
+\item{bsgenome_pkg}{Character string naming the BSgenome package to use 
+(e.g., "BSgenome.Hsapiens.UCSC.hg38" or "BSgenome.Hsapiens.UCSC.hg19").}
 
 \item{bed_input}{Path to a BED file, or a data frame with chromosome/start/end columns.}
 }
@@ -15,5 +16,5 @@ compute_gc_from_bed(fasta_file, bed_input)
 Data frame: chromosome, start, end, GENE, GC_CONTENT.
 }
 \description{
-Compute GC Content Specifically from BED Regions
+Compute GC Content Specifically from BED Regions using BSgenome
 }

@@ -7,6 +7,7 @@
 run_canope(
   gc_file = NULL,
   fasta_file = NULL,
+  bsgenome_pkg = NULL,
   reads_file = NULL,
   modechrom = "A",
   removeY = TRUE,
@@ -61,6 +62,8 @@ run_canope(
 \item{gc_file}{Character or NULL. Path to pre-computed GC table.}
 
 \item{fasta_file}{Character or NULL. Path to genome FASTA (used with bed_file).}
+
+\item{bsgenome_pkg}{Character or NULL. Name of a BSgenome package (e.g. "BSgenome.Hsapiens.UCSC.hg38") – used if \code{fasta_file} is not provided.}
 
 \item{reads_file}{Character or NULL. Path to pre-computed counts table
 (expected layout: \code{chromosome, start, end, GENE, <sample columns...>}).}
@@ -194,7 +197,7 @@ Data frame of all called CNVs across samples (confidence-scored if
 \description{
 End-to-end wrapper: reads count/GC data, QC-filters samples and exons,
 optionally infers reference sets, runs per-sample HMM calling, and writes
-output CSV + RData + plots. Also orchestrates the ECHO-parity features
-added alongside this fix: BED preprocessing, CNV confidence scoring, QC
-metrics, PCA, VCF export, and an interactive HTML report.
+output CSV + RData + plots. Also orchestrates BED preprocessing, CNV
+confidence scoring, QC metrics, PCA, VCF export, and an interactive HTML
+report.
 }

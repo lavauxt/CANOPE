@@ -28,24 +28,15 @@ A list with \code{n_background}, \code{n_outside},
   significant at p < 0.05.
 }
 \description{
-New in response to a real investigation (see README "Round 5"): checking
-a real report's data directly showed the test sample's own ratio at
-*non-called* ("background") exons in a plotted window falling outside
-the modelled 95% predictive interval far more often than the ~5% a
-well-calibrated interval implies — but concentrated entirely in specific
-calls, in a pattern (near-uniform, one-sided elevation across most of the
-window) much more consistent with real signal extending beyond the
-called boundary, an atypical reference match, or a technical/batch
-difference for that sample than with a generically miscalibrated
-interval. A blanket statistical correction was tested (Monte Carlo, see
-README) and rejected — it overcorrected the normal case. This makes that
-same per-call check a permanent, automatic part of the pipeline instead,
-so it doesn't require manually parsing plot data to notice: every call
-gets flagged (or not) using a real statistical test against the null.
+Tests whether the test sample's ratio at *non-called* ("background")
+exons in a plotted window falls outside the modelled 95% predictive
+interval more often than the ~5% a well-calibrated interval implies.
+A high background "outside" rate for a specific call can indicate real
+signal extending beyond the called boundary, an atypical reference
+match, or a technical/batch difference for that sample.
 }
 \details{
-This is a diagnostic flag, not a correction — it doesn't change the
-interval, the call, or the confidence score. It's meant to prompt a
-manual look at specific calls, the same way this issue was actually
-found.
+This is a diagnostic flag only — it doesn't change the interval, the
+call, or the confidence score. It's meant to prompt a manual look at
+specific calls.
 }

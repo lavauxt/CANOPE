@@ -10,9 +10,15 @@ assign_exon_numbers_per_gene(bed_df)
 \item{bed_df}{Data frame with chromosome/Chr, start/Start, end/End, gene/Gene/GENE columns.}
 }
 \value{
-The input data frame with an added \code{exon_number} integer column.
+The input data frame (original row order preserved) with an added
+  \code{exon_number} integer column.
 }
 \description{
-Sorts by chromosome → start → end then assigns 1..n per gene.
-Duplicate intervals (same chrom + start + end + gene) are removed.
+Numbers exons 1..n per gene in genomic order (chromosome, then start, then
+end), regardless of the row order of \code{bed_df}. Duplicate intervals
+(same chrom + start + end + gene) are removed. The returned data frame
+keeps the same row order as the input (minus any removed duplicates) —
+the genomic sort used for numbering is internal only, so callers can
+safely bind \code{exon_number} back onto \code{bed_df} (or any table with
+the same row identity) by position.
 }
