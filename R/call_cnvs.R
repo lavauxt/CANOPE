@@ -137,7 +137,14 @@ call_cnvs <- function(
     ))
     counts <- counts[!unmapped, , drop = FALSE]
   }
-  if (nrow(counts) == 0) stop("No targets remain after removing unrecognised chromosomes")
+  # The HMM engines (hmm_engine.R / canoes_legacy_engine.R) step through
+  # targets with constructs like `for (i in 2:n)`; with n == 1 that becomes
+  # `2:1`, R's classic descending-sequence pitfall, which would silently
+  # index row 0 instead of erroring. Requiring >= 2 targets here turns that
+  # into a clear, immediate error instead.
+  if (nrow(counts) < 2)
+    stop("At least 2 targets are required after removing unrecognised chromosomes (found ",
+         nrow(counts), ")")
 
   counts <- dplyr::arrange(counts, chromosome, start)
 
@@ -224,7 +231,11 @@ call_cnvs <- function(
 
   keep <- counts$mean >= 10 & is.finite(counts$mean) & counts[[sample_name]] >= 5
   counts <- counts[keep, , drop = FALSE]
-  if (nrow(counts) == 0) stop("No valid targets after coverage filtering")
+  # See the matching guard above -- the HMM engines require at least 2
+  # targets to step through safely.
+  if (nrow(counts) < 2)
+    stop("At least 2 valid targets are required after coverage filtering for ",
+         sample_name, " (found ", nrow(counts), ")")
   rownames(counts) <- NULL
 
   distances <- if (engine == "legacy_canoes") legacy_get_distances(counts) else get_distances(counts)

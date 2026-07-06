@@ -194,7 +194,15 @@ process_bed_file <- function(input_bed, output_bed, bed_process = "STANDARD",
     ref_parsed <- parse_bed_name(ref_df$Gene, exon_sep, gene_field_index, gene_name_keep, auto_exon_number, gene_name_collapse)
     ref_df$Gene <- ref_parsed$gene
 
-    if (any(grepl("^NM_", ref_df$Transcript))) ref_df <- ref_df[grepl("^NM_", ref_df$Transcript), ]
+    # Prefer NM_ (RefSeq mRNA) transcripts when available, but per gene --
+    # applying this globally would drop every gene whose *only* transcripts
+    # are non-coding (NR_) or predicted (XM_) as soon as ANY other gene in
+    # the exon superset had an NM_ transcript, which is true for almost any
+    # real panel/genome-wide TxDb and would silently delete those genes'
+    # annotations entirely.
+    is_nm <- grepl("^NM_", ref_df$Transcript)
+    gene_has_nm <- stats::ave(is_nm, ref_df$Gene, FUN = any)
+    ref_df <- ref_df[is_nm | !gene_has_nm, ]
 
     split_ref <- split(ref_df, ref_df$Transcript)
     processed_list <- lapply(split_ref, function(sub_df) {

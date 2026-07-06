@@ -13,7 +13,7 @@ output_prefix: "TEST"               # Prefix for output file names
 
 # Core HMM / CNV calling parameters
 modechrom: "A"                      # "A" (autosomes), "XX", or "XY"
-min_cor: 0.95                       # Minimum Spearman correlation for references
+min_cor: 0.98                       # Minimum Spearman correlation for references
 p_value: 1e-10                      # HMM transition probability (lower = less sensitive)
 Tnum: 10                            # Expected targets per CNV (higher = fewer small events)
 D: 100000                           # Expected genomic span of a CNV (bp)

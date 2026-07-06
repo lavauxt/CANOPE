@@ -67,15 +67,17 @@ canope_filter_chromosomes <- function(df, include = NULL, exclude = NULL) {
 #'
 #' Numbers exons 1..n per gene in genomic order (chromosome, then start, then
 #' end), regardless of the row order of \code{bed_df}. Duplicate intervals
-#' (same chrom + start + end + gene) are removed. The returned data frame
-#' keeps the same row order as the input (minus any removed duplicates) —
-#' the genomic sort used for numbering is internal only, so callers can
-#' safely bind \code{exon_number} back onto \code{bed_df} (or any table with
-#' the same row identity) by position.
+#' (same chrom + start + end + gene) are \emph{not} counted as separate
+#' exons -- they share the \code{exon_number} of their first occurrence --
+#' but they are NOT dropped from the output. The returned data frame always
+#' has exactly \code{nrow(bed_df)} rows, in the same order as the input; the
+#' genomic sort used for numbering is internal only, so callers can safely
+#' bind \code{exon_number} back onto \code{bed_df} (or any table with the
+#' same row identity, e.g. a matching counts table) purely by position.
 #'
 #' @param bed_df Data frame with chromosome/Chr, start/Start, end/End, gene/Gene/GENE columns.
-#' @return The input data frame (original row order preserved) with an added
-#'   \code{exon_number} integer column.
+#' @return The input data frame (original row order and row count preserved)
+#'   with an added \code{exon_number} integer column.
 #' @importFrom data.table := as.data.table setnames setorder .N .I
 #' @export
 assign_exon_numbers_per_gene <- function(bed_df) {
@@ -85,36 +87,51 @@ assign_exon_numbers_per_gene <- function(bed_df) {
   gene_col  <- intersect(c("GENE", "gene", "Gene"), names(bed_df))[1]
   stopifnot(!is.na(chrom_col), !is.na(start_col), !is.na(end_col), !is.na(gene_col))
 
+  n_in <- nrow(bed_df)
+
   dt <- data.table::as.data.table(bed_df)
   data.table::setnames(dt, c(chrom_col, start_col, end_col, gene_col),
                        c("._chrom", "._start", "._end", "._gene"))
 
   # Track original row position so input order can be restored after sorting.
   dt[, ._orig_row := .I]
+  dt[, ._key := paste(`._chrom`, `._start`, `._end`, `._gene`, sep = "\r")]
 
-  dup_rows <- duplicated(dt, by = c("._chrom", "._start", "._end", "._gene"))
+  dup_rows <- duplicated(dt, by = "._key")
   if (any(dup_rows)) {
-    warning(sprintf("Removed %d duplicate BED rows (same chrom, start, end, gene).",
-                    sum(dup_rows)), immediate. = TRUE)
-    dt <- dt[!dup_rows]
+    warning(sprintf(
+      "Found %d duplicate BED row(s) (same chrom, start, end, gene); duplicates will share the exon_number of their first occurrence.",
+      sum(dup_rows)), immediate. = TRUE)
   }
+  # Number only the unique (chrom, start, end, gene) combinations -- a
+  # duplicate row must NOT get its own exon_number bumped from the count,
+  # or a gene with a repeated interval would appear to have more exons than
+  # it does. Crucially, this must not shrink the *output* row count: every
+  # caller relies on binding exon_number back onto bed_df (or any table
+  # sharing its row identity) purely by position, so duplicates are matched
+  # back onto every original row below rather than dropped.
+  dt_unique <- dt[!dup_rows]
 
-  # Sort genomically to compute exon numbers, then restore input row order
-  # below -- callers must be able to bind exon_number back onto bed_df (or
-  # any table sharing its row identity) purely by position.
   chrom_levels <- c(paste0("chr", c(1:22, "X", "Y", "M")), c(as.character(1:22), "X", "Y", "M"))
-  dt[, .chrom_fac := factor(`._chrom`, levels = unique(c(chrom_levels, unique(`._chrom`))))]
-  data.table::setorder(dt, .chrom_fac, `._start`, `._end`)
-  dt[, .chrom_fac := NULL]
+  dt_unique[, .chrom_fac := factor(`._chrom`, levels = unique(c(chrom_levels, unique(`._chrom`))))]
+  data.table::setorder(dt_unique, .chrom_fac, `._start`, `._end`)
+  dt_unique[, .chrom_fac := NULL]
 
-  dt[, exon_number := seq_len(.N), by = "._gene"]
+  dt_unique[, exon_number := seq_len(.N), by = "._gene"]
+
+  # Map exon_number back onto every original row (including any duplicates
+  # identified above) by key, then restore the original row order. This
+  # guarantees nrow(output) == nrow(bed_df) always, regardless of duplicates.
+  dt[, exon_number := dt_unique$exon_number[match(`._key`, dt_unique$`._key`)]]
 
   data.table::setorder(dt, ._orig_row)
-  dt[, ._orig_row := NULL]
+  dt[, c("._orig_row", "._key") := NULL]
 
   data.table::setnames(dt, c("._chrom", "._start", "._end", "._gene"),
                        c(chrom_col, start_col, end_col, gene_col))
-  as.data.frame(dt)
+  out <- as.data.frame(dt)
+  stopifnot(nrow(out) == n_in)
+  out
 }
 
 #' Compute within-gene exon index from a BED-like data frame

@@ -52,7 +52,7 @@ export_canope_to_vcf <- function(cnv_calls, output_vcf, sample_name = NULL,
     '##INFO=<ID=END,Number=1,Type=Integer,Description="End position of the variant described in this record">',
     '##INFO=<ID=CONFIDENCE,Number=1,Type=String,Description="Confidence level (HIGH/MEDIUM/LOW)">',
     '##INFO=<ID=NUMTARG,Number=1,Type=Integer,Description="Number of targets (exons) spanned">',
-    '##INFO=<ID=REFS,Number=.,Type=String,Description="Reference samples used (semicolon-separated)">',
+    '##INFO=<ID=REFS,Number=.,Type=String,Description="Reference samples used (comma-separated)">',
     '##INFO=<ID=NCOMP,Number=1,Type=Integer,Description="Number of reference samples">',
     '##INFO=<ID=QSOME,Number=1,Type=Integer,Description="Phred-scaled probability some CNV exists in this interval (SQ)">',
     '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">',
@@ -127,7 +127,16 @@ export_canope_to_vcf <- function(cnv_calls, output_vcf, sample_name = NULL,
     }
     if ("REF_SAMPLES" %in% colnames(representative)) {
       refs_val <- safe_char(representative$REF_SAMPLES, "")
-      if (nzchar(refs_val)) info_items <- c(info_items, paste0("REFS=", refs_val))
+      if (nzchar(refs_val)) {
+        # REF_SAMPLES is stored ';'-joined elsewhere in the pipeline (CSV
+        # output, HTML report). But INFO fields use ';' to separate distinct
+        # keys and ',' to separate multiple values *within* one Number=.
+        # field (per the VCF spec) -- embedding literal ';' here corrupted
+        # this record's INFO field for any downstream VCF parser. Convert
+        # to ','-joined just for this VCF value.
+        refs_vcf <- gsub(";", ",", refs_val, fixed = TRUE)
+        info_items <- c(info_items, paste0("REFS=", refs_vcf))
+      }
     }
     if ("NUM_REFS" %in% colnames(representative)) {
       ncomp <- safe_char(representative$NUM_REFS)

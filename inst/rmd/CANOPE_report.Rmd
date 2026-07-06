@@ -375,7 +375,7 @@ if (length(samples) == 0) {
 
     # Warning for low-confidence genes
     low_conf_genes <- params$settings$low_confidence_genes
-    all_genes <- unique(unlist(strsplit(as.character(cnv_s$GENE), "[;_]")))
+    all_genes <- unique(trimws(unlist(strsplit(as.character(cnv_s$GENE), "[;, ]"))))
     flag <- intersect(all_genes, low_conf_genes)
     if (length(flag) > 0) {
       cat("\n⚠️ **Warning:** This sample has CNVs involving genes with known pseudogene/homology issues: ",

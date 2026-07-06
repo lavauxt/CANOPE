@@ -203,10 +203,13 @@ compute_gc_from_bed <- function(bsgenome_pkg, bed_input) {
     colnames(bed_df)[1:3] <- c("chromosome", "start", "end")
   }
 
-  # Sort BED by chromosome then start
+  # Sort BED by chromosome then start. NOTE: previously this re-sorted with
+  # plain order() right after gtools::mixedorder(), which silently discarded
+  # the natural numeric ordering (chr1, chr2, ..., chr10) in favour of plain
+  # lexicographic ordering (chr1, chr10, chr11, ..., chr2, ...). Fixed to
+  # actually keep the mixedorder() result when gtools is available.
   if (requireNamespace("gtools", quietly = TRUE)) {
     bed_df <- bed_df[gtools::mixedorder(bed_df$chromosome), ]
-    bed_df <- bed_df[order(bed_df$chromosome, bed_df$start), ]
   } else {
     bed_df <- bed_df[order(bed_df$chromosome, bed_df$start), ]
   }

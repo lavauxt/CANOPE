@@ -81,10 +81,10 @@ canope <- function(config_path = "config.yaml", ...) {
 
   # Settings
   args$modechrom   <- settings$modechrom %||% cfg$modechrom %||% "A"
-  args$min_cor     <- as.numeric(settings$min_corr %||% cfg$min_cor %||% 0.98)
-  args$p_value     <- as.numeric(settings$transition_probability %||% cfg$p_value %||% 1e-08)
-  args$Tnum        <- as.integer(settings$expected_num_targets %||% cfg$Tnum %||% 6L)
-  args$D           <- as.integer(settings$expected_CNV_length %||% cfg$D %||% 100000L)
+  args$min_cor     <- as.numeric(settings$min_cor %||% cfg$min_cor %||% 0.98)
+  args$p_value     <- as.numeric(settings$p_value %||% cfg$p_value %||% 1e-08)
+  args$Tnum        <- as.integer(settings$Tnum %||% cfg$Tnum %||% 6L)
+  args$D           <- as.integer(settings$D %||% cfg$D %||% 100000L)
   args$numrefs     <- as.integer(settings$numrefs %||% cfg$numrefs %||% 30L)
   args$homdel_mean <- as.numeric(settings$homdel_mean %||% cfg$homdel_mean %||% 0.2)
   args$decode_method <- settings$decode_method %||% cfg$decode_method %||% "distance"
@@ -123,23 +123,20 @@ canope <- function(config_path = "config.yaml", ...) {
   args$exon_qc             <- settings$exon_qc %||% cfg$exon_qc %||% TRUE
   args$auto_reference      <- settings$auto_reference %||% cfg$auto_reference %||% TRUE
 
-  # Confidence scoring thresholds (passed as a list to score_canope_confidence)
+  # Confidence scoring thresholds (passed as a list to score_canope_confidence).
+  # The documented config format is a single `confidence_args:` block (see
+  # config.yaml / README) with keys matching score_canope_confidence()'s own
+  # argument names directly (high_q_score, med_q_score, ...). If that block
+  # isn't supplied, fall through to that function's own built-in defaults
+  # by passing an empty list, rather than re-declaring the defaults here
+  # under key names (score_high_q, score_med_q, ...) that no documented
+  # config actually uses.
   if (!is.null(settings$confidence_args) && is.list(settings$confidence_args)) {
     args$confidence_args <- settings$confidence_args
   } else if (!is.null(cfg$confidence_args) && is.list(cfg$confidence_args)) {
     args$confidence_args <- cfg$confidence_args
   } else {
-    # Defaults from the config's scoring section
-    args$confidence_args <- list(
-      high_q_score   = settings$score_high_q %||% cfg$score_high_q %||% 50L,
-      med_q_score    = settings$score_med_q %||% cfg$score_med_q %||% 20L,
-      high_num_refs  = settings$score_high_refs %||% cfg$score_high_refs %||% 10L,
-      med_num_refs   = settings$score_med_refs %||% cfg$score_med_refs %||% 5L,
-      low_confidence_genes = settings$score_low_confidence_genes %||%
-                            cfg$score_low_confidence_genes %||%
-                            c("PMS2", "SMN1", "CYP2D6", "HBA1", "HBA2",
-                              "STRC", "CYP21A2", "GBA1", "CFTR")
-    )
+    args$confidence_args <- list()
   }
 
   # Override with any arguments passed directly to canope()

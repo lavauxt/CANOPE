@@ -254,10 +254,8 @@ run_canope <- function(
     gc <- gc / 100
   }
 
-  # ---- BUG FIX: Use samples_to_analyse, not column offset ----
-  all_sample_names <- samples_to_analyse
-  # -----------------------------------------------------------
 
+  all_sample_names <- samples_to_analyse
   canope.reads_un <- cbind(
     target = seq_len(nrow(canope.reads_un)),
     gc     = gc,
@@ -268,6 +266,10 @@ run_canope <- function(
   # ---- optional reference BAM panel --------------------------
   refsample_names <- character(0)
   if (!is.null(refbams_file) && file.exists(refbams_file)) {
+    if (is.null(ref_reads) || !file.exists(ref_reads))
+      stop("[ERROR] 'refbams_file' was supplied but 'ref_reads' is missing or does not exist. ",
+           "'ref_reads' must be a pre-computed counts table for the reference panel.")
+
     rawrefbams <- utils::read.csv(refbams_file, header = TRUE, sep = "\t")
     if ("gender" %in% colnames(rawrefbams)) {
       if (modechrom == "XX")      rawrefbams <- subset(rawrefbams, gender == "F")
@@ -276,10 +278,25 @@ run_canope <- function(
     refbams         <- apply(rawrefbams, 1, toString)
     refsample_names <- tools::file_path_sans_ext(basename(refbams))
 
-    canope.reads_ref <- utils::read.table(ref_reads, header = TRUE)[, -(1:3), drop = FALSE]
-    data_ref         <- utils::read.table(ref_reads, header = TRUE)
-    names(canope.reads_ref) <- names(data_ref)[seq(4, ncol(data_ref))]
-    canope.reads_un  <- cbind(canope.reads_un, canope.reads_ref)
+    # Same 4-metadata-column convention as 'reads_file' (chromosome, start,
+    # end, GENE) -- previously this dropped only the first 3 columns, which
+    # silently kept GENE as if it were the first reference sample's read
+    # counts whenever ref_reads used the same layout as reads_file.
+    data_ref <- utils::read.table(ref_reads, header = TRUE, check.names = FALSE,
+                                  stringsAsFactors = FALSE)
+    n_ref_meta <- 4L
+    if (ncol(data_ref) <= n_ref_meta)
+      stop("[ERROR] ref_reads has no sample columns after the expected ",
+           n_ref_meta, " metadata columns (chromosome, start, end, GENE).")
+    canope.reads_ref <- data_ref[, seq(n_ref_meta + 1L, ncol(data_ref)), drop = FALSE]
+
+    missing_refs <- setdiff(refsample_names, colnames(canope.reads_ref))
+    if (length(missing_refs) > 0)
+      stop(sprintf(
+        "[ERROR] %d reference sample(s) from refbams_file not found as columns in ref_reads: %s",
+        length(missing_refs), paste(missing_refs, collapse = ", ")))
+
+    canope.reads_un <- cbind(canope.reads_un, canope.reads_ref[, refsample_names, drop = FALSE])
   }
 
   target_samples <- if (length(refsample_names) > 0)
@@ -393,6 +410,7 @@ run_canope <- function(
   refs_list   <- list()
 
   for (samp in samples_to_analyse) {
+    log_msg("INFO", sprintf("Calling CNVs for sample %s ...", samp))
     tryCatch({
       refs_to_use <- if (auto_reference && !is.null(auto_refs)) auto_refs[[samp]] else refsample_names
       if (auto_reference && is.null(refs_to_use)) {
@@ -409,6 +427,9 @@ run_canope <- function(
         refsample_names = refs_to_use, full_output = TRUE,
         min_cor = min_cor, decode_method = decode_method, engine = engine
       )
+
+      n_called <- if (!is.null(res) && !is.null(res$cnvs)) nrow(res$cnvs) else 0L
+      log_msg("INFO", sprintf("  -> %d CNV(s) found for %s", n_called, samp))
 
       if (!is.null(res) && nrow(res$cnvs) > 0) all_cnvs[[samp]] <- res$cnvs
       refs_list[[samp]] <- res$reference_samples

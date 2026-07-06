@@ -97,12 +97,12 @@ If `report: TRUE` is set in your config, an interactive HTML report will be gene
 Standard 0-based BED file. If `bed_process` is set to `"STANDARD"` or `"REGEN"`, the input BED will be automatically annotated with gene/exon information before coverage extraction.
 
 **Reads File (`canope.reads.tsv`)** *(Optional)*
-If you already have pre-computed read counts, you can provide a tab-separated file instead of letting CANOPE extract from BAMs. It must contain raw read counts for all samples across targeted regions.
+If you already have pre-computed read counts, you can provide a tab-separated file instead of letting CANOPE extract from BAMs. It must contain exactly four metadata columns (`chromosome`, `start`, `end`, `GENE`) followed by one column of raw read counts per sample -- `run_canope()` matches columns by position after the fourth column, so an extra or missing metadata column will shift every sample's counts by one.
 
-| chromosome | start | end | Sample1 | Sample2 | Sample3 |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| chr1 | 10000 | 10150 | 45 | 50 | 48 |
-| chr1 | 10500 | 10620 | 12 | 15 | 11 |
+| chromosome | start | end | GENE | Sample1 | Sample2 | Sample3 |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| chr1 | 10000 | 10150 | BRCA1 | 45 | 50 | 48 |
+| chr1 | 10500 | 10620 | BRCA1 | 12 | 15 | 11 |
 
 ## Output Format (`CNVCall.csv`)
 
