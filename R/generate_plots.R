@@ -175,7 +175,13 @@ generate_plots <- function(
       )
       pt_data <- pt_data[pt_data$color_group == "Affected exon(s)", , drop = FALSE]
 
-      p_cov   <- create_coverage_plot(cov_data, pt_data, single_chr, prev, exon_range, exon_index)
+      # ===== UPDATED: pass sample_name to coverage plot =====
+      p_cov <- create_coverage_plot(
+        cov_data, pt_data, single_chr, prev, exon_range, exon_index,
+        sample_name = sample_name
+      )
+      # ====================================================
+
       p_genes <- create_gene_tile_plot(bed_file, exon_range, single_chr, prev, new_chr)
       test_counts   <- model_lookup(models[[sample_name]], "test_counts", bed_file$target[exon_range])
       target_means  <- model_mean
@@ -386,9 +392,19 @@ apply_xaxis_formatting <- function(p, single_chr, prev, exon_range, exon_index) 
 }
 
 
-#' @noRd
-create_coverage_plot <- function(cov_data, pt_data, single_chr, prev, exon_range, exon_index) {
+# ===== UPDATED: create_coverage_plot with sample_name argument =====
+create_coverage_plot <- function(cov_data, pt_data, single_chr, prev, exon_range, exon_index, sample_name = NULL) {
   cols <- c("Reference Sample" = "gray", "Test Sample" = "blue", "Affected exon(s)" = "red")
+  
+  test_label <- if (!is.null(sample_name) && nzchar(sample_name)) {
+    paste0("Test Sample (", sample_name, ")")
+  } else {
+    "Test Sample"
+  }
+  labels <- c("Reference Sample" = "Reference Sample",
+              "Test Sample"      = test_label,
+              "Affected exon(s)" = "Affected exon(s)")
+  
   p_cov <- ggplot2::ggplot() +
     ggplot2::geom_line(
       data = subset(cov_data, color_group == "Reference Sample"),
@@ -412,10 +428,11 @@ create_coverage_plot <- function(cov_data, pt_data, single_chr, prev, exon_range
       data = pt_data,
       ggplot2::aes(x = exon_idx, y = coverage, color = color_group), size = 3
     ) +
-    ggplot2::scale_colour_manual(values = cols, guide = "legend") +
+    ggplot2::scale_colour_manual(values = cols, labels = labels, guide = "legend") +
     ggplot2::labs(y = "log2(Coverage + 0.5)", x = NULL) +
     ggplot2::theme_bw() +
     ggplot2::theme(legend.position = "top", legend.title = ggplot2::element_blank())
+  
   apply_xaxis_formatting(p_cov, single_chr, prev, exon_range, exon_index)
 }
 
