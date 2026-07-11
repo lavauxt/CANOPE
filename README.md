@@ -124,6 +124,12 @@ The output is a tabular file containing the detected variations:
 
 - **BED preprocessing** (`canope_bed_process.R`) — `STANDARD`/`REGEN`/`NO`
   modes, gene/exon annotation from panel files or RefSeq.
+- **Sample/exon QC exclusion** (`canope_qc_reference_utils.R`) —
+  `sample_qc` drops outlier samples (robust z-score on cross-target noise)
+  and `exon_qc` drops problematic exons (high cross-sample MAD, low mean
+  coverage, or GC content outside `gc_extreme_filter`) *before* HMM calling.
+  Both default `TRUE`. This runs independently of, and before, the
+  low-variance reference selection described above.
 - **QC metrics table** (`canope_qc_metrics.R`) — per-sample and per-exon
   flags (low correlation, low depth, high CV, missing sex chromosomes),
   written to TSV and shown in the report.
@@ -164,6 +170,26 @@ run_canope(..., engine = "legacy_canoes")   # or per-sample: call_cnvs(..., engi
 If you request `decode_method = "stationary"` together with
 `engine = "legacy_canoes"`, you'll get a warning and it falls back to
 distance-based transitions — the original never had a stationary mode.
+
+## Related project: ECHO
+
+CANOPE has a sibling pipeline, **ECHO**, which targets the same use case
+(exome/panel CNV calling) but calls variants with `ExomeDepth`'s
+beta-binomial model instead of CANOPE's own HMM. The two share the same
+overall pipeline shape — BED preprocessing, BAM coverage/GC extraction,
+sample/exon QC, confidence scoring, VCF export, static PDF plots, and an
+interactive HTML report — and most of that shared scaffolding (BED
+preprocessing modes, exon-numbering, PCA, background-calibration
+diagnostics, VCF/report layout) is kept in sync between the two so that
+switching between them, or running both on the same panel, feels
+consistent. Only the actual calling engine and its specific tuning
+parameters (`p_value`/`Tnum`/`D`/`numrefs` here vs. ExomeDepth's
+`transition.probability`/`expected.CNV.length`/`phi.bins` there) are
+pipeline-specific by design.
+
+See `CANOPE_vs_ECHO_COMPARISON.md` for the full feature-parity matrix
+between the two pipelines, along with a changelog of bugs found and fixed
+and parity features added during the most recent cross-pipeline audit.
 
 ## License
 
