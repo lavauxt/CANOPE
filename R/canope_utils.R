@@ -148,6 +148,421 @@ compute_exon_index <- function(bed_df) {
   assign_exon_numbers_per_gene(bed_df)$exon_number
 }
 
+#' Reclassify off-target / filler BED intervals before exon numbering
+#'
+#' Ported from ECHO. Some target panels include intervals that were never a
+#' real gene exon at all: normalization/backbone probes placed off-target
+#' for coverage calibration, commonly named things like \code{"HorsROI"}
+#' ("hors ROI" is French for "outside the region of interest"),
+#' \code{"OffTarget"}, \code{"Backbone"}, and so on. Left alone, the BED-name
+#' parser extracts whatever the first token of that name happens to be
+#' (e.g. \code{"HorsROI"}) as if it were a gene symbol, and
+#' \code{\link{assign_exon_numbers_per_gene}} then numbers it 1..n exactly
+#' like a real gene with its own exons -- so a plot window that happens to
+#' straddle one of these intervals shows it interleaved with the real
+#' gene's exons under its own (fake) "gene" tile. This function catches
+#' those rows, by name, \strong{before} any numbering happens, and lets the
+#' caller choose what should happen to them.
+#'
+#' @param bed_df data.frame with chromosome/Chr, start/Start, end/End,
+#'   GENE/gene/Gene columns (1-based coordinates; genomic order not
+#'   required -- \code{handling = "merge"} sorts internally).
+#' @param pattern Character. A regular expression (matched against the
+#'   gene column, case-sensitively, consistent with the exon-name parser)
+#'   identifying off-target/filler rows -- e.g. \code{"^HorsROI"}, or
+#'   \code{"^(HorsROI|OffTarget|Backbone)$"} for a panel using several such
+#'   labels. \code{NULL} or \code{""} disables this feature entirely
+#'   (returns \code{bed_df} unchanged). Default \code{"^HorsROI"}.
+#' @param handling One of:
+#'   \itemize{
+#'     \item \code{"na"} (default) -- keep the interval (it still gets
+#'       coverage extracted and still contributes background signal) but
+#'       set the gene column to \code{NA} on those rows, so
+#'       \code{assign_exon_numbers_per_gene()} and everything downstream
+#'       (plots, VCF GENE column, confidence scoring) leaves them
+#'       un-numbered and out of any gene-based grouping, instead of
+#'       numbering the filler label as if it were a gene.
+#'     \item \code{"remove"} -- drop those rows entirely.
+#'     \item \code{"merge"} -- reassign the gene column to the nearest
+#'       neighbouring \emph{real} gene on the same chromosome (ties go to
+#'       the preceding gene), so the interval is treated as one of that
+#'       gene's own exons and gets numbered like any other exon. A row
+#'       with no real gene anywhere on its chromosome is left unchanged.
+#'   }
+#' @param verbose Logical. Print a one-line summary. Default \code{TRUE}.
+#' @return The same data.frame: column set and row order preserved for
+#'   \code{"na"}/\code{"merge"}; row count reduced for \code{"remove"}.
+#' @export
+handle_off_target_regions <- function(bed_df, pattern = "^HorsROI",
+                                      handling = c("na", "remove", "merge"),
+                                      verbose = TRUE) {
+  handling <- match.arg(handling)
+  if (is.null(pattern) || !nzchar(pattern)) return(bed_df)
+  if (is.null(bed_df) || nrow(bed_df) == 0) return(bed_df)
+
+  chrom_col <- intersect(c("chromosome", "Chr", "CHROM"), names(bed_df))[1]
+  start_col <- intersect(c("start", "Start", "START"), names(bed_df))[1]
+  end_col   <- intersect(c("end", "End", "END"), names(bed_df))[1]
+  gene_col  <- intersect(c("GENE", "gene", "Gene"), names(bed_df))[1]
+  if (is.na(gene_col)) return(bed_df)
+
+  gene_vals <- as.character(bed_df[[gene_col]])
+  is_off <- !is.na(gene_vals) & grepl(pattern, gene_vals, perl = TRUE)
+  n_off <- sum(is_off)
+  if (n_off == 0) return(bed_df)
+
+  if (handling == "remove") {
+    out <- bed_df[!is_off, , drop = FALSE]
+    if (verbose) {
+      message(sprintf("[INFO] handle_off_target_regions: removed %d off-target interval(s) matching /%s/.",
+                      n_off, pattern))
+    }
+    return(out)
+  }
+
+  if (handling == "na") {
+    bed_df[[gene_col]][is_off] <- NA_character_
+    if (verbose) {
+      message(sprintf(
+        "[INFO] handle_off_target_regions: set gene = NA for %d off-target interval(s) matching /%s/ (kept, excluded from exon numbering).",
+        n_off, pattern))
+    }
+    return(bed_df)
+  }
+
+  # handling == "merge": walk the off-target rows in genomic order and
+  # attach each one to whichever real gene -- the previous one or the
+  # next one, on the same chromosome -- sits closer. A simple forward/
+  # backward carry-forward pass (O(n), two linear scans) rather than a
+  # per-row search, since a panel BED can run into the tens of thousands
+  # of rows.
+  ord     <- order(bed_df[[chrom_col]], bed_df[[start_col]], bed_df[[end_col]])
+  n       <- length(ord)
+  chrom_s <- as.character(bed_df[[chrom_col]])[ord]
+  start_s <- bed_df[[start_col]][ord]
+  end_s   <- bed_df[[end_col]][ord]
+  gene_s  <- gene_vals[ord]
+  off_s   <- is_off[ord]
+
+  prev_gene <- character(n); prev_end <- numeric(n)
+  g <- NA_character_; e <- NA_real_; last_chrom <- NA_character_
+  for (i in seq_len(n)) {
+    if (!identical(chrom_s[i], last_chrom)) { g <- NA_character_; e <- NA_real_; last_chrom <- chrom_s[i] }
+    prev_gene[i] <- g; prev_end[i] <- e
+    if (!off_s[i]) { g <- gene_s[i]; e <- end_s[i] }
+  }
+
+  next_gene <- character(n); next_start <- numeric(n)
+  g <- NA_character_; s <- NA_real_; last_chrom <- NA_character_
+  for (i in rev(seq_len(n))) {
+    if (!identical(chrom_s[i], last_chrom)) { g <- NA_character_; s <- NA_real_; last_chrom <- chrom_s[i] }
+    next_gene[i] <- g; next_start[i] <- s
+    if (!off_s[i]) { g <- gene_s[i]; s <- start_s[i] }
+  }
+
+  new_gene_s <- gene_s
+  n_merged   <- 0L
+  for (i in which(off_s)) {
+    has_prev <- !is.na(prev_gene[i])
+    has_next <- !is.na(next_gene[i])
+    if (has_prev && has_next) {
+      d_prev <- start_s[i] - prev_end[i]
+      d_next <- next_start[i] - end_s[i]
+      new_gene_s[i] <- if (d_prev <= d_next) prev_gene[i] else next_gene[i]
+      n_merged <- n_merged + 1L
+    } else if (has_prev) {
+      new_gene_s[i] <- prev_gene[i]; n_merged <- n_merged + 1L
+    } else if (has_next) {
+      new_gene_s[i] <- next_gene[i]; n_merged <- n_merged + 1L
+    } # else: no real gene anywhere on this chromosome -- leave as-is
+  }
+
+  bed_df[[gene_col]][ord] <- new_gene_s
+  if (verbose) {
+    message(sprintf(
+      "[INFO] handle_off_target_regions: merged %d/%d off-target interval(s) matching /%s/ into their nearest neighbouring gene (%d had no real gene on their chromosome to attach to).",
+      n_merged, n_off, pattern, n_off - n_merged))
+  }
+  bed_df
+}
+
+#' Pad the outer edge of each gene's first and last exon
+#'
+#' Ported from ECHO. Capture-based coverage often drops off right at the
+#' true edge of a target interval (probe/bait tiling is rarely perfect
+#' exactly at the boundary, and reads whose alignment barely spans the edge
+#' get soft-clipped or excluded). For an internal exon this is usually
+#' harmless -- its neighbours carry the signal -- but for a gene's *first*
+#' (lowest-coordinate) or *last* (highest-coordinate) exon there is no such
+#' neighbour on the outward side, so a thin sliver of low/zero coverage
+#' right at that edge can pull the whole exon's count down. This function
+#' extends only the outward-facing edge of those two terminal exons per
+#' gene (both edges, for a single-exon gene) by \code{padding} bases.
+#'
+#' "First"/"last" follows the same purely-genomic (chrom, start, end)
+#' ordering that \code{\link{assign_exon_numbers_per_gene}} uses everywhere
+#' else in CANOPE. Internal exons (and the inward-facing edge of a
+#' terminal exon) are left untouched.
+#'
+#' Padding is applied on a best-effort basis ("if possible"): the function
+#' never creates an overlap with whatever interval sits next to it on the
+#' same chromosome (a neighbouring exon of the same gene or of a different
+#' one), and never pushes a coordinate below 1 or past the contig length
+#' (when \code{chr_lengths} is supplied). Where the available gap is
+#' narrower than \code{padding} -- including the case where two different
+#' genes' terminal exons sit right next to each other and both want a
+#' share of the same small gap -- that gap is split between the two
+#' competing sides rather than let either one overlap the other.
+#'
+#' @param bed_df data.frame with columns chromosome/Chr, start/Start,
+#'   end/End, GENE/gene/Gene (1-based, inclusive coordinates).
+#' @param padding Integer >= 0. Bases to add to the outward edge of each
+#'   gene's first and last exon. \code{0} (the default) disables padding
+#'   and returns \code{bed_df} unchanged.
+#' @param chr_lengths Optional named numeric vector (names = chromosome,
+#'   values = contig length) used to cap the last exon's End at the contig
+#'   boundary. If \code{NULL}, no contig-length clamp is applied (only the
+#'   neighbouring-interval clamp).
+#' @param verbose Logical. Print a one-line summary. Default \code{TRUE}.
+#' @return The same data.frame (original row order and row count
+#'   preserved), with Start/End adjusted for terminal-exon rows only.
+#' @export
+pad_gene_terminal_exons <- function(bed_df, padding = 0, chr_lengths = NULL, verbose = TRUE) {
+  if (is.null(padding) || length(padding) != 1 || is.na(padding) || padding <= 0) {
+    return(bed_df)
+  }
+  padding <- as.integer(round(padding))
+
+  chrom_col <- intersect(c("chromosome", "Chr", "CHROM"), names(bed_df))[1]
+  start_col <- intersect(c("start", "Start", "START"), names(bed_df))[1]
+  end_col   <- intersect(c("end", "End", "END"), names(bed_df))[1]
+  gene_col  <- intersect(c("GENE", "gene", "Gene"), names(bed_df))[1]
+  stopifnot(!is.na(chrom_col), !is.na(start_col), !is.na(end_col), !is.na(gene_col))
+
+  n_in <- nrow(bed_df)
+  if (n_in == 0) return(bed_df)
+
+  # Reuse the pipeline's own per-gene ordering so "first"/"last" here
+  # always agrees with exon_number everywhere else in CANOPE.
+  numbered <- assign_exon_numbers_per_gene(bed_df)
+
+  dt <- data.table::as.data.table(numbered)
+  dt[, .orig_row := .I]
+  data.table::setnames(dt, c(chrom_col, start_col, end_col, gene_col),
+                       c("chrom", "start", "end", "gene"))
+
+  dt[, is_first := exon_number == 1L]
+  dt[, is_last  := exon_number == max(exon_number), by = "gene"]
+  no_gene <- is.na(dt$gene) | dt$gene %in% c("", ".", "Unknown")
+  dt[no_gene, c("is_first", "is_last") := FALSE]
+
+  # Sort a copy by genomic position (per chromosome) so each terminal
+  # exon can see its nearest neighbour on either side -- regardless of
+  # which gene that neighbour belongs to -- and never be padded into it.
+  chrom_levels <- c(paste0("chr", c(1:22, "X", "Y", "M")),
+                    c(as.character(1:22), "X", "Y", "M"))
+  dt[, .chrom_fac := factor(chrom, levels = unique(c(chrom_levels, unique(chrom))))]
+  data.table::setorder(dt, .chrom_fac, start, end)
+
+  n        <- nrow(dt)
+  chrom_id <- as.integer(dt$.chrom_fac)
+  start_v  <- dt$start
+  end_v    <- dt$end
+  is_first_v <- dt$is_first
+  is_last_v  <- dt$is_last
+
+  right_extend <- integer(n)  # applies to is_last rows: bp added to end
+  left_extend  <- integer(n)  # applies to is_first rows: bp subtracted from start
+
+  # Gap k (k = 1..n-1) sits between sorted row k and row k+1. Both may
+  # want a share of it at once -- row k if it's a last exon growing
+  # rightward, row k+1 if it's a first exon growing leftward (this is
+  # the one place two *different* genes' terminal exons can compete for
+  # the same free space). Give each what it asks for if the gap is big
+  # enough for both; otherwise split the gap between them so neither
+  # padded interval ever crosses into the other's.
+  if (n > 1) {
+    same_chr_pair <- chrom_id[-n] == chrom_id[-1]
+    gap        <- pmax(start_v[-1] - end_v[-n] - 1L, 0L)
+    want_left  <- ifelse(is_last_v[-n],  padding, 0L)  # row k wants to grow right
+    want_right <- ifelse(is_first_v[-1], padding, 0L)  # row k+1 wants to grow left
+    demand     <- want_left + want_right
+
+    grant_left  <- integer(n - 1L)
+    grant_right <- integer(n - 1L)
+    has_demand  <- same_chr_pair & demand > 0
+    fits        <- has_demand & demand <= gap
+    tight       <- has_demand & demand > gap
+
+    grant_left[fits]  <- want_left[fits]
+    grant_right[fits] <- want_right[fits]
+    grant_left[tight]  <- as.integer(floor(gap[tight] * want_left[tight] / demand[tight]))
+    grant_right[tight] <- gap[tight] - grant_left[tight]
+
+    right_extend[-n] <- grant_left
+    left_extend[-1]  <- grant_right
+  }
+
+  # Rows at a chromosome boundary (no same-chromosome neighbour on the
+  # relevant side) have no interval to compete with there, so they fall
+  # back to the contig start (position 1) / contig length instead.
+  has_prev <- c(FALSE, if (n > 1) chrom_id[-1] == chrom_id[-n] else logical(0))
+  has_next <- c(if (n > 1) chrom_id[-n] == chrom_id[-1] else logical(0), FALSE)
+
+  no_prev_first <- is_first_v & !has_prev
+  if (any(no_prev_first)) {
+    left_extend[no_prev_first] <- pmin(padding, pmax(start_v[no_prev_first] - 1L, 0L))
+  }
+
+  no_next_last <- is_last_v & !has_next
+  if (any(no_next_last)) {
+    chr_len_here <- if (!is.null(chr_lengths)) {
+      unname(chr_lengths[as.character(dt$chrom[no_next_last])])
+    } else {
+      rep(NA_real_, sum(no_next_last))
+    }
+    avail <- ifelse(!is.na(chr_len_here), chr_len_here - end_v[no_next_last], Inf)
+    right_extend[no_next_last] <- pmin(padding, pmax(avail, 0))
+  }
+
+  n_padded_start <- sum(left_extend > 0L)
+  n_padded_end   <- sum(right_extend > 0L)
+  n_clamped      <- sum(is_first_v & left_extend  < padding) +
+                     sum(is_last_v  & right_extend < padding)
+
+  dt[, start := start_v - left_extend]
+  dt[, end   := end_v   + right_extend]
+
+  data.table::setorder(dt, .orig_row)  # restore original (input) row order
+  dt[, c(".orig_row", ".chrom_fac", "is_first", "is_last", "exon_number") := NULL]
+  data.table::setnames(dt, c("chrom", "start", "end", "gene"),
+                       c(chrom_col, start_col, end_col, gene_col))
+  out <- as.data.frame(dt)
+  stopifnot(nrow(out) == n_in)
+
+  if (verbose) {
+    message(sprintf(
+      "[INFO] pad_gene_terminal_exons: requested %d bp padding -- extended %d gene start(s) and %d gene end(s); %d side(s) received less than the full request (shared gap with a neighbouring interval, or a contig boundary).",
+      padding, n_padded_start, n_padded_end, n_clamped))
+  }
+  out
+}
+
+#' Pad a BED \emph{file}'s gene-terminal exons (file-level wrapper)
+#'
+#' CANOPE's coverage/GC-content functions (\code{\link{get_coverage_from_bams}},
+#' \code{\link{get_coverage_from_bams_megadepth}}, \code{\link{compute_gc_from_fasta}},
+#' \code{\link{compute_gc_from_bed}}) all take a BED \emph{path}, re-reading it
+#' from disk independently -- unlike ECHO, where a single in-memory
+#' \code{bed_file} is padded once and reused for everything. This wrapper
+#' reads a BED file, applies \code{\link{pad_gene_terminal_exons}}, and
+#' writes the result back out to \code{output_bed} in the same column
+#' layout as the input, so \code{run_canope()} can point every downstream
+#' consumer at one consistently-padded file.
+#'
+#' Internally converts the (0-based, half-open) BED coordinates to 1-based
+#' inclusive before padding, and back to 0-based on write-out, so the
+#' padding math is identical to ECHO's (which operates on 1-based BED
+#' output from \code{process_bed_file()}).
+#'
+#' @param input_bed Path to a BED file (>= 3 columns; a 4th "name"/gene
+#'   column is required for per-gene padding to be meaningful -- without
+#'   one, every row is treated as its own single-exon "gene").
+#' @param output_bed Path to write the padded BED to.
+#' @param padding Integer >= 0 bp of padding (see \code{\link{pad_gene_terminal_exons}}).
+#'   \code{0} just copies \code{input_bed} to \code{output_bed} unchanged.
+#' @param chr_lengths Optional named numeric vector of contig lengths (see
+#'   \code{\link{pad_gene_terminal_exons}}).
+#' @param verbose Logical. Default \code{TRUE}.
+#' @return Invisibly returns \code{output_bed}.
+#' @export
+pad_bed_file <- function(input_bed, output_bed, padding = 0, chr_lengths = NULL, verbose = TRUE) {
+  if (is.null(padding) || is.na(padding) || padding <= 0) {
+    if (!identical(normalizePath(input_bed, mustWork = FALSE),
+                   normalizePath(output_bed, mustWork = FALSE))) {
+      file.copy(input_bed, output_bed, overwrite = TRUE)
+    }
+    return(invisible(output_bed))
+  }
+
+  raw <- utils::read.table(input_bed, sep = "\t", header = FALSE, stringsAsFactors = FALSE)
+  if (ncol(raw) < 3) stop("[ERROR] pad_bed_file: input BED must have at least 3 columns: ", input_bed)
+  colnames(raw)[1:3] <- c("chromosome", "start", "end")
+  if (ncol(raw) >= 4) colnames(raw)[4] <- "GENE" else raw$GENE <- paste0("Target_", seq_len(nrow(raw)))
+
+  # 0-based half-open -> 1-based inclusive, so this reuses the exact same
+  # (already-verified) gap math as ECHO's 1-based pipeline.
+  raw$start <- raw$start + 1L
+
+  padded <- pad_gene_terminal_exons(raw, padding = padding, chr_lengths = chr_lengths, verbose = verbose)
+
+  # 1-based inclusive -> back to 0-based half-open for BED output.
+  padded$start <- padded$start - 1L
+
+  # Keep every original column (including any 5th+ columns beyond
+  # chrom/start/end/gene, e.g. score/strand), but drop the synthetic GENE
+  # column again if the input never had a 4th column to begin with.
+  keep   <- if (ncol(raw) >= 4) colnames(raw) else setdiff(colnames(raw), "GENE")
+  out_df <- padded[, keep, drop = FALSE]
+
+  dir.create(dirname(output_bed), showWarnings = FALSE, recursive = TRUE)
+  utils::write.table(out_df, file = output_bed, sep = "\t", row.names = FALSE, col.names = FALSE, quote = FALSE)
+  if (verbose) message("[INFO] pad_bed_file: padded BED written: ", output_bed)
+  invisible(output_bed)
+}
+
+#' Compute gap-inserted x-axis positions for CNV window plots
+#'
+#' Ported from ECHO. All of CANOPE's per-call plots (the four PDF panels in
+#' \code{generate_plots.R} and the three interactive panels in
+#' \code{CANOPE_report.Rmd}) lay a window of exons out along a single
+#' x-axis. Plotted at plain 1..n integer positions, a gene boundary inside
+#' that window looks identical to an ordinary intron between two exons of
+#' the *same* gene -- there's nothing to tell a reader "these two points
+#' belong to different genes" other than the tile-track colour (PDF only;
+#' the HTML report has no tile track at all). This function computes an
+#' alternative x-position (\code{px}) for each exon in the window that
+#' inserts \code{gap} extra, unlabelled axis units wherever the gene
+#' column changes between consecutive exons -- i.e. between a gene's last
+#' exon and the next gene's first exon -- while keeping ordinary
+#' within-gene spacing at a plain 1 unit.
+#'
+#' It also returns \code{gene_group}, a per-position integer that
+#' increments at every such boundary. Passing this as the \code{group}
+#' aesthetic on a \code{geom_line()}/\code{geom_ribbon()} keeps that visual
+#' gap genuinely blank -- otherwise ggplot draws a single connected
+#' line/ribbon straight across it.
+#'
+#' @param bed_df data.frame with a GENE/gene/Gene column. \code{exon_range}
+#'   values are row indices into this data.frame.
+#' @param exon_range Integer vector of \code{bed_df} row indices, in the
+#'   order they'll be plotted along the x-axis (ascending genomic order).
+#' @param gap Numeric >= 0. Extra x-axis units inserted at each gene
+#'   boundary. \code{0} falls back to plain 1..n spacing (no visual gap,
+#'   but \code{gene_group} is still computed correctly). Default \code{1}.
+#' @return data.frame with one row per element of \code{exon_range}:
+#'   \code{idx}, \code{px}, \code{gene_break}, \code{gene_group}.
+#' @export
+compute_gene_gap_positions <- function(bed_df, exon_range, gap = 1) {
+  if (length(exon_range) == 0) {
+    return(data.frame(idx = integer(0), px = numeric(0),
+                      gene_break = logical(0), gene_group = integer(0)))
+  }
+  gap <- if (is.null(gap) || is.na(gap) || gap < 0) 1 else gap
+
+  gene_col <- intersect(c("GENE", "gene", "Gene"), names(bed_df))[1]
+  genes    <- as.character(bed_df[[gene_col]][exon_range])
+  genes[is.na(genes)] <- ""
+
+  gene_break <- c(FALSE, genes[-1] != genes[-length(genes)])
+  step       <- ifelse(gene_break, 1 + gap, 1)
+  step[1]    <- 0
+  px         <- cumsum(step) + 1
+
+  data.frame(idx = exon_range, px = px, gene_break = gene_break,
+            gene_group = cumsum(gene_break) + 1L, stringsAsFactors = FALSE)
+}
+
 #' Normalise chromosome names to match a reference naming style (vectorised)
 #'
 #' @param chr_vec Character vector of chromosome names to normalise.

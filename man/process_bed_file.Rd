@@ -27,6 +27,8 @@ process_bed_file(
   genome_version = NULL,
   txdb = NULL,
   gene_field_index = NULL,
+  off_target_pattern = "^HorsROI",
+  off_target_handling = c("na", "remove", "merge"),
   ...
 )
 }
@@ -64,6 +66,20 @@ used to annotate gene/exon names onto the input intervals.}
 
 \item{gene_field_index}{1-based field index for the gene name after splitting
 (legacy fallback for \code{gene_name_keep}).}
+
+\item{off_target_pattern}{Character regex (matched against the parsed
+gene name, case-sensitively) identifying off-target/filler intervals
+such as normalization "backbone" probes -- e.g. \code{"^HorsROI"}
+(the default) or \code{"^(HorsROI|OffTarget|Backbone)$"} for a panel
+using several such labels. \code{NULL} disables this feature (these
+intervals are then treated as an ordinary gene, the pre-existing
+behaviour). Ported from ECHO; see \code{\link{handle_off_target_regions}}.}
+
+\item{off_target_handling}{One of \code{"na"} (default -- keep the
+interval but exclude it from exon numbering/gene grouping),
+\code{"remove"} (drop it entirely), or \code{"merge"} (attach it to
+its nearest neighbouring real gene, so it's numbered as one of that
+gene's own exons). Only used when \code{off_target_pattern} is set.}
 
 \item{...}{Other parameters, accepted for forward compatibility.}
 }

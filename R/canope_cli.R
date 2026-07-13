@@ -111,6 +111,10 @@ canope <- function(config_path = "config.yaml", ...) {
     args$bed_process_args <- list()
   }
 
+  # Terminal-exon padding / plot gene-gap spacing (ported from ECHO)
+  args$pad_terminal_exons <- as.numeric(settings$pad_terminal_exons %||% cfg$pad_terminal_exons %||% 0)
+  args$plot_gene_gap      <- as.numeric(settings$plot_gene_gap %||% cfg$plot_gene_gap %||% 1)
+
   # Flags
   args$run_qc_metrics      <- settings$run_qc_metrics %||% cfg$run_qc_metrics %||% TRUE
   args$score_confidence    <- settings$score_confidence %||% cfg$score_confidence %||% TRUE

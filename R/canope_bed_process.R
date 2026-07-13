@@ -25,6 +25,18 @@
 #' @param genome_version \code{"hg19"} or \code{"hg38"} (REGEN mode only).
 #' @param gene_field_index 1-based field index for the gene name after splitting
 #'   (legacy fallback for \code{gene_name_keep}).
+#' @param off_target_pattern Character regex (matched against the parsed
+#'   gene name, case-sensitively) identifying off-target/filler intervals
+#'   such as normalization "backbone" probes -- e.g. \code{"^HorsROI"}
+#'   (the default) or \code{"^(HorsROI|OffTarget|Backbone)$"} for a panel
+#'   using several such labels. \code{NULL} disables this feature (these
+#'   intervals are then treated as an ordinary gene, the pre-existing
+#'   behaviour). Ported from ECHO; see \code{\link{handle_off_target_regions}}.
+#' @param off_target_handling One of \code{"na"} (default -- keep the
+#'   interval but exclude it from exon numbering/gene grouping),
+#'   \code{"remove"} (drop it entirely), or \code{"merge"} (attach it to
+#'   its nearest neighbouring real gene, so it's numbered as one of that
+#'   gene's own exons). Only used when \code{off_target_pattern} is set.
 #' @param ... Other parameters, accepted for forward compatibility.
 #'
 #' @return Invisibly returns \code{output_bed}.
@@ -40,7 +52,10 @@ process_bed_file <- function(input_bed, output_bed, bed_process = "STANDARD",
                              list_genes = NULL, genes_file = NULL,
                              panel_files = NULL,
                              genome_version = NULL, txdb = NULL,
-                             gene_field_index = NULL, ...) {
+                             gene_field_index = NULL,
+                             off_target_pattern = "^HorsROI",
+                             off_target_handling = c("na", "remove", "merge"), ...) {
+  off_target_handling <- match.arg(off_target_handling)
 
   parse_bed_name <- function(name_vec, exon_sep = " ", gene_field_index = NULL,
                              gene_name_keep = NULL, auto_exon = TRUE, gene_name_collapse = " ") {
@@ -64,14 +79,34 @@ process_bed_file <- function(input_bed, output_bed, bed_process = "STANDARD",
     g_clean <- gsub("\\s*\\(.*?\\)", "", as.character(name_vec))
     g_clean <- sub("^([^,]+),.*$", "\\1", g_clean)
 
-    # ---- FIX: Proper exon number extraction with length matching ----
-    exon_matches <- regexpr("(_ex|ex)([0-9]+)", g_clean)
-    exon_numbers <- rep(NA_integer_, length(g_clean))
-    has_match <- exon_matches != -1
-    exon_numbers[has_match] <- as.integer(
-      gsub("[^0-9]", "", regmatches(g_clean, exon_matches))
-    )
-    # ----------------------------------------------------------------
+    # Exon-number extraction.
+    #
+    # BUGFIX (ported from ECHO): the previous pattern, `(_ex|ex)([0-9]+)`
+    # with `regexpr()` (first match only, no word-boundary requirement on
+    # the bare "ex" branch), had two failure modes on real-world naming
+    # variations: (1) it always took the *first* "exN"-looking token in
+    # the string, so any earlier stray match would win over the true exon
+    # token later in the name; (2) the bare "ex" alternative could in
+    # principle match inside a larger word rather than a genuine
+    # "ex"/"_ex"/"-ex" token boundary. Fixed by: requiring "ex" not be
+    # immediately preceded by a letter/digit (a real token boundary, via a
+    # lookbehind), accepting "ex" or "exon" optionally followed by "_"/"-",
+    # and taking the *last* such token in the (already comma-truncated)
+    # name rather than the first -- the true exon designator is normally
+    # the one immediately before the trailing chr/position suffix. Digits
+    # are read straight from the capture group rather than stripped out of
+    # the whole match.
+    exon_pattern <- "(?<![A-Za-z0-9])ex(?:on)?[_-]?([0-9]+)"
+    exon_all <- gregexpr(exon_pattern, g_clean, perl = TRUE)
+    exon_numbers <- vapply(seq_along(g_clean), function(i) {
+      m <- exon_all[[i]]
+      if (length(m) == 0 || m[1] == -1) return(NA_integer_)
+      cap_start <- attr(m, "capture.start")[, 1]
+      cap_len   <- attr(m, "capture.length")[, 1]
+      last <- length(m)
+      digits <- substr(g_clean[i], cap_start[last], cap_start[last] + cap_len[last] - 1)
+      suppressWarnings(as.integer(digits))
+    }, integer(1))
 
     parts_list <- strsplit(g_clean, split = split_pat, fixed = use_fixed)
 
@@ -238,6 +273,7 @@ process_bed_file <- function(input_bed, output_bed, bed_process = "STANDARD",
     names(df)[names(df) == "Start"] <- "start"
     names(df)[names(df) == "End"] <- "end"
     names(df)[names(df) == "Gene"] <- "gene"
+    df <- handle_off_target_regions(df, pattern = off_target_pattern, handling = off_target_handling)
     df <- assign_exon_numbers_per_gene(df)
     names(df)[names(df) == "chromosome"] <- "Chr"
     names(df)[names(df) == "start"] <- "Start"
@@ -298,6 +334,7 @@ process_bed_file <- function(input_bed, output_bed, bed_process = "STANDARD",
         names(df)[names(df) == "Start"] <- "start"
         names(df)[names(df) == "End"] <- "end"
         names(df)[names(df) == "Gene"] <- "gene"
+        df <- handle_off_target_regions(df, pattern = off_target_pattern, handling = off_target_handling)
         df <- assign_exon_numbers_per_gene(df)
         names(df)[names(df) == "chromosome"] <- "Chr"
         names(df)[names(df) == "start"] <- "Start"
@@ -315,6 +352,7 @@ process_bed_file <- function(input_bed, output_bed, bed_process = "STANDARD",
         names(df)[names(df) == "Start"] <- "start"
         names(df)[names(df) == "End"] <- "end"
         names(df)[names(df) == "Gene"] <- "gene"
+        df <- handle_off_target_regions(df, pattern = off_target_pattern, handling = off_target_handling)
         df <- assign_exon_numbers_per_gene(df)
         names(df)[names(df) == "chromosome"] <- "Chr"
         names(df)[names(df) == "start"] <- "Start"
@@ -333,6 +371,7 @@ process_bed_file <- function(input_bed, output_bed, bed_process = "STANDARD",
       names(df)[names(df) == "Start"] <- "start"
       names(df)[names(df) == "End"] <- "end"
       names(df)[names(df) == "Gene"] <- "gene"
+      df <- handle_off_target_regions(df, pattern = off_target_pattern, handling = off_target_handling)
       df <- assign_exon_numbers_per_gene(df)
       names(df)[names(df) == "chromosome"] <- "Chr"
       names(df)[names(df) == "start"] <- "Start"
@@ -347,6 +386,11 @@ process_bed_file <- function(input_bed, output_bed, bed_process = "STANDARD",
       Chr = input_df$Chr, Start = input_df$Start, End = input_df$End,
       Gene = input_df$Gene, ExonNum = input_df$ExonNum, stringsAsFactors = FALSE
     )
+    # No exon-numbering step happens in this mode, but a filler/off-target
+    # region's name can still leak into the GENE column shown downstream
+    # (plots, VCF, confidence scoring) if left alone -- so this still runs
+    # here even though assign_exon_numbers_per_gene() never does.
+    df <- handle_off_target_regions(df, pattern = off_target_pattern, handling = off_target_handling)
     df$Custom.Exon <- df$ExonNum
   } else {
     stop("bed_process must be 'STANDARD', 'REGEN', or 'NO'")

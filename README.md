@@ -24,6 +24,23 @@ By employing low-variance reference sample selection, Negative Binomial emission
 * **Robust HMM Engine:** Implements a Hidden Markov Model with dynamically computed transition probabilities (based on genomic distance) and Negative Binomial emission probabilities.
 * **Auto-Extraction:** Built-in auto-extraction of per-target read counts directly from BAM files (via `GenomicAlignments` or `megadepth`) and GC content directly from `BSgenome` packages or indexed FASTA files.
 * **Native Visualization:** Generates comprehensive PDF reports with tracking plots, coverage ratios, and specific gene annotations completely independent of heavy third-party plotting frameworks.
+* **Terminal-Exon Padding:** `pad_terminal_exons` (bp, default `0` = off)
+  extends the outward-facing edge of each gene's first and last exon, where
+  there's no neighbouring exon to carry the signal if coverage thins out
+  right at the boundary. Padding is applied "if possible" — it never
+  overlaps a neighbouring target or crosses a contig boundary, clamping
+  short instead. Ported from ECHO.
+* **Gene-Boundary Spacing in Plots:** `plot_gene_gap` (default `1`) inserts
+  blank x-axis space between a gene's last exon and the next gene's first
+  exon in every PDF and HTML-report panel, so a window that spans more
+  than one gene doesn't read as one continuous, unbroken feature. Ported
+  from ECHO.
+* **Off-Target/Filler Region Handling:** BED panels sometimes include
+  normalization "backbone" probes that are never a real gene exon (often
+  named things like `HorsROI`). Rows matching `off_target_pattern`
+  (default `"^HorsROI"`, configured under `bed_process_args`) are handled
+  per `off_target_handling`: `"na"` (default), `"remove"`, or `"merge"`.
+  Ported from ECHO.
 
 ## Installation
 
@@ -69,6 +86,11 @@ settings:
   numrefs: 30
   coverage_backend: "bioconductor"             # or "megadepth"
   bed_process: "STANDARD"                      # or "NO" / "REGEN"
+  bed_process_args:
+    off_target_pattern: "^HorsROI"             # e.g. filter out backbone/filler probes
+    off_target_handling: "na"                  # "na" | "remove" | "merge"
+  pad_terminal_exons: 0                        # e.g. 10 to pad each gene's first/last exon by 10bp
+  plot_gene_gap: 1                             # blank x-axis space between adjacent genes in plots
   run_qc_metrics: TRUE
   export_vcf: TRUE
   report: TRUE
@@ -123,7 +145,40 @@ The output is a tabular file containing the detected variations:
 ## Additional Features
 
 - **BED preprocessing** (`canope_bed_process.R`) — `STANDARD`/`REGEN`/`NO`
-  modes, gene/exon annotation from panel files or RefSeq.
+  modes, gene/exon annotation from panel files or RefSeq. Exon-number
+  extraction from the BED name (e.g. `..._ex12_...`) requires a genuine
+  `ex`/`exon` token boundary (not a substring of a larger word) and takes
+  the *last* such token in the name rather than the first, so compound
+  names like `5utr1-ex1` or `utr2-ex10-extra` resolve to the right exon.
+  Off-target/filler intervals (e.g. `HorsROI` backbone probes) are caught
+  by name via `off_target_pattern` before any exon numbering happens —
+  see `handle_off_target_regions()` below. Ported from ECHO.
+- **Off-target/filler region handling** (`canope_utils.R::handle_off_target_regions()`) —
+  rows whose parsed gene matches `off_target_pattern` (default
+  `"^HorsROI"`, set under `bed_process_args`) are, per
+  `off_target_handling`: kept with `GENE = NA` and excluded from numbering
+  (`"na"`, default), dropped (`"remove"`), or attached to the nearest
+  neighbouring real gene on the same chromosome and numbered as one of its
+  exons (`"merge"`). Without this, such rows get numbered as if the filler
+  label were a gene in its own right, and show up interleaved with the
+  real gene's exons in plots. Ported from ECHO.
+- **Terminal-exon padding** (`canope_utils.R::pad_gene_terminal_exons()` /
+  `pad_bed_file()`) — extends the outward edge of each gene's first/last
+  exon by `pad_terminal_exons` bp (default `0`, off) before coverage/GC
+  extraction, so a thin sliver of low coverage right at a gene boundary is
+  less likely to drag the whole exon's count down. Applied "if possible":
+  clamped short of the requested amount rather than overlapping a
+  neighbouring target or crossing a contig boundary. Internal exon
+  boundaries are left alone. Only takes effect when extracting fresh from
+  BAMs (a supplied `reads_file` is left untouched, since it was already
+  extracted over some fixed window). Ported from ECHO.
+- **Gene-boundary spacing in plots** (`canope_utils.R::compute_gene_gap_positions()`) —
+  shared by both the PDF panels (`canope_generate_plots.R`) and the HTML
+  report (`CANOPE_report.Rmd`), so a CNV window spanning more than one
+  gene shows real blank space, in every panel, exactly between a gene's
+  last exon and the next gene's first exon — lines and ribbons break there
+  rather than visually bridging the gap. Controlled by `plot_gene_gap`
+  (default `1`; `0` disables it). Ported from ECHO.
 - **Sample/exon QC exclusion** (`canope_qc_reference_utils.R`) —
   `sample_qc` drops outlier samples (robust z-score on cross-target noise)
   and `exon_qc` drops problematic exons (high cross-sample MAD, low mean

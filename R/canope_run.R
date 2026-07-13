@@ -64,6 +64,30 @@
 #'   extraction / GC computation.
 #' @param bed_process_args   Named list of extra arguments forwarded to
 #'   \code{\link{process_bed_file}} (e.g. \code{list(genome_version = "hg38")}).
+#'   Also where off-target/filler-region handling is configured -- add
+#'   \code{off_target_pattern}/\code{off_target_handling} keys here; see
+#'   \code{\link{process_bed_file}} and \code{\link{handle_off_target_regions}}.
+#'   Ported from ECHO.
+#' @param pad_terminal_exons Integer >= 0. Bases to extend the outward-facing
+#'   edge of each gene's first and last exon (both edges, for a single-exon
+#'   gene), applied to \code{bed_file} before coverage/GC extraction --
+#'   reduces the chance of a 0/low count right at a gene boundary where
+#'   there's no neighbouring exon to carry the signal. Never creates an
+#'   overlap with a neighbouring interval or crosses a contig boundary;
+#'   padding is applied "if possible" and clamped short otherwise. Only
+#'   takes effect when extracting fresh from BAMs (i.e. \code{reads_file}
+#'   is \code{NULL}) -- a pre-computed \code{reads_file} was already
+#'   extracted over some fixed window, so padding \code{bed_file} alone
+#'   afterward would desync GC content from the counts it's paired with.
+#'   Ported from ECHO; see \code{\link{pad_gene_terminal_exons}}. Default
+#'   \code{0} (disabled).
+#' @param plot_gene_gap      Numeric >= 0. Extra x-axis units inserted
+#'   between a gene's last exon and the next gene's first exon in every PDF
+#'   and HTML-report panel, so a window that spans more than one gene
+#'   doesn't read as one continuous, unbroken feature. Forwarded to
+#'   \code{\link{generate_plots}} and to the interactive report. Ported
+#'   from ECHO; see \code{\link{compute_gene_gap_positions}}. Default
+#'   \code{1}.
 #' @param run_qc_metrics     Logical. Compute and write CANOPE QC metrics
 #'   (see \code{\link{run_canope_qc_metrics}}). Default TRUE.
 #' @param qc_output_file     Path for the QC metrics TSV. Default derived from
@@ -109,6 +133,7 @@ run_canope <- function(
     decode_method = c("distance", "stationary"),
     engine = c("new", "legacy_canoes"),
     bed_process = "NO", bed_process_args = list(),
+    pad_terminal_exons = 0, plot_gene_gap = 1,
     run_qc_metrics = TRUE, qc_output_file = NULL,
     qc_min_corr = 0.98, qc_min_cov = 100, qc_min_total_reads = 300000, qc_max_exon_cv = 0.5,
     score_confidence = TRUE, confidence_args = list(),
@@ -136,6 +161,8 @@ run_canope <- function(
   on.exit(close(log_con), add = TRUE)
 
   log_msg("INFO", "Preparing count matrix")
+  log_msg("INFO", sprintf("Terminal-exon padding: %s bp | Plot gene-gap: %s",
+                          pad_terminal_exons %||% 0, plot_gene_gap %||% 1))
 
   # ── BED preprocessing (optional) ─────────────────────────────────────────
   if (!is.null(bed_file) && !identical(bed_process, "NO")) {
@@ -177,6 +204,38 @@ run_canope <- function(
     colnames(canope.reads_un)[seq(n_expected_meta + 1L, ncol(canope.reads_un))] <- samples_to_analyse
 
   } else {
+    # ── Terminal-exon padding (optional; ported from ECHO) ─────────────────
+    # Only applied here, in the fresh-from-BAMs branch: bed_file is about to
+    # be handed to both the coverage extractor and (below) the GC
+    # computation, so padding it once here keeps counts and GC content on
+    # the same (padded) window. A reads_file, by contrast, was already
+    # extracted over some fixed window by an earlier run -- padding
+    # bed_file for GC alone in that case would desync GC from the counts
+    # it's paired with, so pad_terminal_exons is ignored when reads_file is
+    # supplied.
+    if (!is.null(pad_terminal_exons) && !is.na(pad_terminal_exons) && pad_terminal_exons > 0) {
+      chr_lengths_for_padding <- NULL
+      if (!is.null(fasta_file) && file.exists(fasta_file)) {
+        chr_lengths_for_padding <- tryCatch(
+          GenomeInfoDb::seqlengths(Rsamtools::FaFile(fasta_file)),
+          error = function(e) {
+            log_msg("WARNING", "Could not read contig lengths from fasta_file for padding clamp: ", conditionMessage(e))
+            NULL
+          })
+      } else if (!is.null(bsgenome_pkg) && requireNamespace(bsgenome_pkg, quietly = TRUE)) {
+        chr_lengths_for_padding <- tryCatch(
+          GenomeInfoDb::seqlengths(getExportedValue(bsgenome_pkg, bsgenome_pkg)),
+          error = function(e) {
+            log_msg("WARNING", "Could not read contig lengths from bsgenome_pkg for padding clamp: ", conditionMessage(e))
+            NULL
+          })
+      }
+      padded_bed <- file.path(out_dir, "padded.bed")
+      log_msg("INFO", sprintf("Applying terminal-exon padding (%d bp) to %s", pad_terminal_exons, bed_file))
+      pad_bed_file(bed_file, padded_bed, padding = pad_terminal_exons, chr_lengths = chr_lengths_for_padding)
+      bed_file <- padded_bed
+    }
+
     log_msg("INFO", sprintf("Auto-coverage extraction from BAMs (backend = '%s')...", coverage_backend))
     counts_df <- switch(
       coverage_backend,
@@ -474,7 +533,8 @@ run_canope <- function(
 
     if (generate_plots_flag && nrow(final_cnvs) > 0) {
       log_msg("INFO", "Generating static CNV plots")
-      generate_plots(rdata_file = rdata_output, output_dir = plot_dir, modechrom = modechrom)
+      generate_plots(rdata_file = rdata_output, output_dir = plot_dir, modechrom = modechrom,
+                     gene_gap = plot_gene_gap)
     }
   }
 
@@ -538,7 +598,8 @@ run_canope <- function(
         output_dir = report_output_dir,
         settings = c(list(low_confidence_genes = c("PMS2", "SMN1", "CYP2D6", "HBA1", "HBA2",
                                                     "STRC", "CYP21A2", "GBA1", "CFTR"),
-                          qc_min_cov = qc_min_cov, qc_min_total_reads = qc_min_total_reads),
+                          qc_min_cov = qc_min_cov, qc_min_total_reads = qc_min_total_reads,
+                          plot_gene_gap = plot_gene_gap),
                     confidence_args),
         sample_table = sample_table, log_file = log_file,
         template_path = report_template

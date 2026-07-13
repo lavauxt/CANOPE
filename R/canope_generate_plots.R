@@ -9,6 +9,11 @@
 #' @param modechrom   \code{"A"}, \code{"XX"}, or \code{"XY"} chromosome filter.
 #' @param prefix      Filename prefix (default: date stamp).
 #' @param flank       Number of flanking targets to show on each side.
+#' @param gene_gap    Numeric >= 0. Extra x-axis units inserted between a
+#'   gene's last exon and the next gene's first exon, in every panel, so
+#'   the two are visually separated instead of sitting flush like ordinary
+#'   neighbouring exons. \code{0} disables the extra spacing. Ported from
+#'   ECHO; see \code{\link{compute_gene_gap_positions}}. Default \code{1}.
 #' @param debug       Print extra messages.
 #'
 #' @importFrom ggplot2 ggplot geom_line geom_point geom_tile geom_ribbon geom_hline aes scale_color_manual theme theme_bw labs scale_x_continuous element_text element_blank
@@ -22,6 +27,7 @@ generate_plots <- function(
     modechrom = "A",
     prefix = NULL,
     flank = 5L,
+    gene_gap = 1,
     debug = FALSE
 ) {
   message("[INFO] BEGIN plot generation")
@@ -123,6 +129,14 @@ generate_plots <- function(
       next
     }
 
+    # Gap-inserted x-axis positions, so every panel shows a visual break
+    # between a gene's last exon and the next gene's first exon rather
+    # than plotting them as if they were plain neighbouring exons. Ported
+    # from ECHO; see compute_gene_gap_positions().
+    gap_pos    <- compute_gene_gap_positions(bed_file, exon_range, gap = gene_gap)
+    px         <- gap_pos$px
+    gene_group <- gap_pos$gene_group
+
     cnv_rows <- targets_to_rows(seq(idx_start, idx_end), bed_file$target)
     cnv_rows <- cnv_rows[!is.na(cnv_rows)]
 
@@ -156,20 +170,20 @@ generate_plots <- function(
         )
         r_log <- log2((counts[exon_range, r] * scaling) + pseudocount)
         cov_list[[length(cov_list) + 1L]] <- data.frame(
-          exon_idx = exon_range, coverage = r_log, group = r,
+          exon_idx = exon_range, px = px, gene_group = gene_group, coverage = r_log, group = r,
           color_group = "Reference Sample", stringsAsFactors = FALSE
         )
       }
       if (length(cov_list) == 0L) stop("No valid reference samples")
 
       cov_list[[length(cov_list) + 1L]] <- data.frame(
-        exon_idx = exon_range, coverage = test_log, group = "Test Sample",
+        exon_idx = exon_range, px = px, gene_group = gene_group, coverage = test_log, group = "Test Sample",
         color_group = "Test Sample", stringsAsFactors = FALSE
       )
       cov_data <- do.call(rbind, cov_list)
 
       pt_data <- data.frame(
-        exon_idx = exon_range, coverage = test_log,
+        exon_idx = exon_range, px = px, gene_group = gene_group, coverage = test_log,
         color_group = ifelse(exon_range %in% cnv_rows, "Affected exon(s)", "Test Sample"),
         stringsAsFactors = FALSE
       )
@@ -177,12 +191,12 @@ generate_plots <- function(
 
       # ===== UPDATED: pass sample_name to coverage plot =====
       p_cov <- create_coverage_plot(
-        cov_data, pt_data, single_chr, prev, exon_range, exon_index,
+        cov_data, pt_data, single_chr, prev, exon_range, exon_index, px,
         sample_name = sample_name
       )
       # ====================================================
 
-      p_genes <- create_gene_tile_plot(bed_file, exon_range, single_chr, prev, new_chr)
+      p_genes <- create_gene_tile_plot(bed_file, exon_range, single_chr, prev, new_chr, px)
       test_counts   <- model_lookup(models[[sample_name]], "test_counts", bed_file$target[exon_range])
       target_means  <- model_mean
       target_vars   <- model_var
@@ -199,7 +213,7 @@ generate_plots <- function(
       hi <- log2((maxs + pseudocount) / expected_safe)
 
       ci_data <- data.frame(
-        exon = exon_range, ratio = ratio, lo = lo, hi = hi,
+        exon = exon_range, px = px, gene_group = gene_group, ratio = ratio, lo = lo, hi = hi,
         is_affected = factor(
           exon_range %in% cnv_rows,
           levels = c(FALSE, TRUE),
@@ -218,21 +232,24 @@ generate_plots <- function(
         )
       }
 
-      p_ci <- ggplot2::ggplot(ci_data, ggplot2::aes(x = exon)) +
-        ggplot2::geom_ribbon(ggplot2::aes(ymin = lo, ymax = hi), fill = "grey90", colour = NA) +
+      p_ci <- ggplot2::ggplot(ci_data, ggplot2::aes(x = px)) +
+        # group = gene_group breaks the ribbon/line into one piece per
+        # gene, so neither visually bridges the blank space at a gene
+        # boundary. Ported from ECHO.
+        ggplot2::geom_ribbon(ggplot2::aes(ymin = lo, ymax = hi, group = gene_group), fill = "grey90", colour = NA) +
         ggplot2::geom_hline(yintercept = 0, linetype = "dashed", colour = "black") +
-        ggplot2::geom_line(ggplot2::aes(y = ratio), colour = "steelblue", linewidth = 0.8) +
+        ggplot2::geom_line(ggplot2::aes(y = ratio, group = gene_group), colour = "steelblue", linewidth = 0.8) +
         ggplot2::geom_point(ggplot2::aes(y = ratio, color = is_affected), size = 3) +
         ggplot2::scale_color_manual(values = c("Observed" = "blue", "Affected" = "red")) +
         ggplot2::theme_bw() +
         ggplot2::theme(legend.position = "none") +
         ggplot2::labs(x = "", y = "log2(Observed / Expected)",
                       subtitle = ci_subtitle)
-      p_ci <- apply_xaxis_formatting(p_ci, single_chr, prev, exon_range, exon_index)
+      p_ci <- apply_xaxis_formatting(p_ci, single_chr, prev, exon_range, exon_index, px)
 
       p_z <- create_zscore_plot(
         models[[sample_name]], exon_range, bed_file$target[exon_range], sample_name, ref_samples,
-        cnv_rows, single_chr, prev, exon_index
+        cnv_rows, single_chr, prev, exon_index, px, gene_group
       )
 
       interval_label <- as.character(cnv_plot$INTERVAL[call_idx])
@@ -318,9 +335,13 @@ model_matrix_lookup <- function(model, field, target_ids) {
 #' @param target_ids \code{bed_file$target[exon_range]} — the target IDs
 #'   used to align model data, since model rows are not necessarily in the
 #'   same order/subset as \code{bed_file}.
+#' @param px         Gap-inserted x-axis positions for \code{exon_range}
+#'   (see \code{\link{compute_gene_gap_positions}}), same order/length.
+#' @param gene_group Per-position gene-group id (same source), used to
+#'   break each line at a gene boundary rather than bridging it.
 #' @noRd
 create_zscore_plot <- function(model, exon_range, target_ids, sample_name, ref_samples,
-                               cnv_rows, single_chr, prev, exon_index) {
+                               cnv_rows, single_chr, prev, exon_index, px, gene_group) {
   test_vals <- model_lookup(model, "test_counts", target_ids)
   ref_mat   <- model_matrix_lookup(model, "ref_matrix", target_ids)
   model_var <- model_lookup(model, "var_estimate", target_ids)
@@ -338,19 +359,26 @@ create_zscore_plot <- function(model, exon_range, target_ids, sample_name, ref_s
 
   z_df <- data.frame(
     exon = rep(exon_range, times = length(ref_samples) + 1L),
+    px = rep(px, times = length(ref_samples) + 1L),
+    gene_group = rep(gene_group, times = length(ref_samples) + 1L),
     z = c(as.vector(ref_z), sample_z),
     series = rep(c(ref_samples, sample_name), each = length(exon_range)),
     highlight = rep(exon_range %in% cnv_rows, times = length(ref_samples) + 1L)
   )
   z_df$series <- factor(z_df$series, levels = c(ref_samples, sample_name))
 
-  p <- ggplot2::ggplot(z_df, ggplot2::aes(x = exon, y = z, group = series)) +
+  p <- ggplot2::ggplot(z_df, ggplot2::aes(x = px, y = z)) +
+    # group = interaction(series, gene_group): each series' line still
+    # breaks at a gene boundary, not just at a change of series. Ported
+    # from ECHO.
     ggplot2::geom_line(
       data = subset(z_df, series != sample_name),
+      ggplot2::aes(group = interaction(series, gene_group, drop = TRUE)),
       colour = "gray60", linewidth = 0.6, alpha = 0.8
     ) +
     ggplot2::geom_line(
       data = subset(z_df, series == sample_name),
+      ggplot2::aes(group = gene_group),
       colour = "red", linewidth = 1.2
     ) +
     ggplot2::geom_point(
@@ -363,28 +391,28 @@ create_zscore_plot <- function(model, exon_range, target_ids, sample_name, ref_s
     ggplot2::labs(x = "", y = "Z-score vs references",
                   subtitle = "Test sample (red) with CNV targets highlighted")
 
-  apply_xaxis_formatting(p, single_chr, prev, exon_range, exon_index)
+  apply_xaxis_formatting(p, single_chr, prev, exon_range, exon_index, px)
 }
 
 
 #' @noRd
-apply_xaxis_formatting <- function(p, single_chr, prev, exon_range, exon_index) {
+apply_xaxis_formatting <- function(p, single_chr, prev, exon_range, exon_index, px) {
   if (length(exon_range) == 0L) return(p)
-  min_e <- min(exon_range)
-  max_e <- max(exon_range)
+  min_p <- min(px)
+  max_p <- max(px)
 
   if (single_chr) {
-    b <- exon_range
+    b <- px
     l <- exon_index[exon_range]
     lim <- NULL
   } else if (prev) {
-    b <- (min_e - 6L):max_e
+    b <- c((min_p - 6L):(min_p - 1L), px)
     l <- c(rep("", 6L), exon_index[exon_range])
-    lim <- c(min_e - 6.75, max_e)
+    lim <- c(min_p - 6.75, max_p)
   } else {
-    b <- min_e:(max_e + 6L)
+    b <- c(px, (max_p + 1L):(max_p + 6L))
     l <- c(exon_index[exon_range], rep("", 6L))
-    lim <- c(min_e, max_e + 6.75)
+    lim <- c(min_p, max_p + 6.75)
   }
 
   p + ggplot2::scale_x_continuous(breaks = b, labels = l, limits = lim) +
@@ -393,7 +421,7 @@ apply_xaxis_formatting <- function(p, single_chr, prev, exon_range, exon_index) 
 
 
 # ===== UPDATED: create_coverage_plot with sample_name argument =====
-create_coverage_plot <- function(cov_data, pt_data, single_chr, prev, exon_range, exon_index, sample_name = NULL) {
+create_coverage_plot <- function(cov_data, pt_data, single_chr, prev, exon_range, exon_index, px, sample_name = NULL) {
   cols <- c("Reference Sample" = "gray", "Test Sample" = "blue", "Affected exon(s)" = "red")
   
   test_label <- if (!is.null(sample_name) && nzchar(sample_name)) {
@@ -408,44 +436,48 @@ create_coverage_plot <- function(cov_data, pt_data, single_chr, prev, exon_range
   p_cov <- ggplot2::ggplot() +
     ggplot2::geom_line(
       data = subset(cov_data, color_group == "Reference Sample"),
-      ggplot2::aes(x = exon_idx, y = coverage, group = group, color = color_group),
+      ggplot2::aes(x = px, y = coverage, group = group, color = color_group),
       linetype = "dashed", linewidth = 1.1
     ) +
     ggplot2::geom_point(
       data = subset(cov_data, color_group == "Reference Sample"),
-      ggplot2::aes(x = exon_idx, y = coverage, color = color_group), size = 2
+      ggplot2::aes(x = px, y = coverage, color = color_group), size = 2
     ) +
     ggplot2::geom_line(
       data = subset(cov_data, color_group == "Test Sample"),
-      ggplot2::aes(x = exon_idx, y = coverage, group = group, color = color_group),
+      ggplot2::aes(x = px, y = coverage, group = group, color = color_group),
       linetype = "dashed", linewidth = 1.1
     ) +
     ggplot2::geom_point(
       data = subset(cov_data, color_group == "Test Sample"),
-      ggplot2::aes(x = exon_idx, y = coverage, color = color_group), size = 2
+      ggplot2::aes(x = px, y = coverage, color = color_group), size = 2
     ) +
     ggplot2::geom_point(
       data = pt_data,
-      ggplot2::aes(x = exon_idx, y = coverage, color = color_group), size = 3
+      ggplot2::aes(x = px, y = coverage, color = color_group), size = 3
     ) +
     ggplot2::scale_colour_manual(values = cols, labels = labels, guide = "legend") +
     ggplot2::labs(y = "log2(Coverage + 0.5)", x = NULL) +
     ggplot2::theme_bw() +
     ggplot2::theme(legend.position = "top", legend.title = ggplot2::element_blank())
   
-  apply_xaxis_formatting(p_cov, single_chr, prev, exon_range, exon_index)
+  apply_xaxis_formatting(p_cov, single_chr, prev, exon_range, exon_index, px)
 }
 
 
 #' @noRd
-create_gene_tile_plot <- function(bed_file, exon_range, single_chr, prev, new_chr) {
+create_gene_tile_plot <- function(bed_file, exon_range, single_chr, prev, new_chr, px) {
   if (length(exon_range) == 0L) return(ggplot2::ggplot())
   temp <- cbind(row = seq_len(nrow(bed_file)), bed_file)[exon_range, , drop = FALSE]
 
   gene_names <- unique(bed_file$GENE[exon_range])
   gene_tiles <- data.frame(
     gene  = gene_names,
-    mid   = vapply(gene_names, function(g) mean(exon_range[temp$GENE == g]), numeric(1)),
+    # mid/width computed on the gap-inserted px scale (not raw exon_range
+    # indices) so each gene's tile lines up with that gene's points/lines
+    # in the other panels, and adjacent tiles get real blank space between
+    # them at a gene boundary instead of sitting flush. Ported from ECHO.
+    mid   = vapply(gene_names, function(g) mean(px[temp$GENE == g]), numeric(1)),
     width = vapply(gene_names, function(g) sum(temp$GENE == g), numeric(1)) - 0.5,
     y     = 1,
     stringsAsFactors = FALSE
@@ -455,7 +487,7 @@ create_gene_tile_plot <- function(bed_file, exon_range, single_chr, prev, new_ch
       gene_tiles,
       data.frame(
         gene = new_chr,
-        mid  = if (prev) min(exon_range) - 5 else max(exon_range) + 5,
+        mid  = if (prev) min(px) - 5 else max(px) + 5,
         width = 3.5, y = 1, stringsAsFactors = FALSE
       )
     )

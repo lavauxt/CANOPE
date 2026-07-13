@@ -4,7 +4,7 @@
 \alias{\%||\%}
 \title{Null-coalescing operator}
 \usage{
-x \%||\% y
+a \%||\% b
 }
 \arguments{
 \item{a}{Primary value.}

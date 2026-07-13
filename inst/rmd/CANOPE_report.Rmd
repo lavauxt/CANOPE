@@ -46,7 +46,7 @@ library(kableExtra)
 # format_chr_label, compute_exon_index, model_lookup, model_matrix_lookup)
 # are on the search path.
 # ---------------------------------------------------------------------------
-get_canope_plot_data <- function(call_row, counts, bed_file, models, refs, flank = 5) {
+get_canope_plot_data <- function(call_row, counts, bed_file, models, refs, flank = 5, gene_gap = 1) {
 
   sample <- call_row$SAMPLE
   target_bounds <- parse_canope_targets(call_row$TARGETS)
@@ -69,6 +69,15 @@ get_canope_plot_data <- function(call_row, counts, bed_file, models, refs, flank
   single_chr <- length(unique(bed_chr)) == 1
   if (!single_chr) exon_range <- exon_range[bed_chr == target_chr]
   if (length(exon_range) == 0) return(NULL)
+
+  # Gap-inserted x-axis positions, so a gene's last exon and the next
+  # gene's first exon get real blank space between them instead of
+  # sitting flush like ordinary neighbouring exons. Ported from ECHO;
+  # shared with generate_plots.R via compute_gene_gap_positions() so PDF
+  # and HTML report panels agree.
+  gap_pos    <- compute_gene_gap_positions(bed_file, exon_range, gap = gene_gap)
+  px         <- gap_pos$px
+  gene_group <- gap_pos$gene_group
 
   cnv_rows <- targets_to_rows(seq(idx_start, idx_end), bed_file$target)
   cnv_rows <- cnv_rows[!is.na(cnv_rows)]
@@ -112,7 +121,7 @@ get_canope_plot_data <- function(call_row, counts, bed_file, models, refs, flank
 
   ref_cov <- do.call(rbind, lapply(ref_samples, function(r) {
     data.frame(
-      Exon = exon_range, ExonLabel = exon_labels,
+      Exon = exon_range, ExonLabel = exon_labels, Px = px, GeneGroup = gene_group,
       Coverage = log2(counts[exon_range, r] + pseudocount),
       Group = "Reference samples", RefName = r,
       stringsAsFactors = FALSE
@@ -127,16 +136,18 @@ get_canope_plot_data <- function(call_row, counts, bed_file, models, refs, flank
     sample      = sample,
     exon_range  = exon_range,
     exon_labels = exon_labels,
+    px          = px,
+    gene_group  = gene_group,
     affected    = exon_range %in% cnv_rows,
     test_log    = log2(test_counts + pseudocount),
     bg_calibration = bg_calib,
     ratio_df    = data.frame(
-      Exon = exon_range, ExonLabel = exon_labels,
+      Exon = exon_range, ExonLabel = exon_labels, Px = px, GeneGroup = gene_group,
       Ratio = ratio, CI_low = lo, CI_high = hi,
       Affected = exon_range %in% cnv_rows
     ),
     z_df = data.frame(
-      Exon = exon_range, ExonLabel = exon_labels,
+      Exon = exon_range, ExonLabel = exon_labels, Px = px, GeneGroup = gene_group,
       Z = sample_z, Affected = exon_range %in% cnv_rows
     ),
     ref_z_df = {
@@ -144,6 +155,8 @@ get_canope_plot_data <- function(call_row, counts, bed_file, models, refs, flank
       colnames(rz) <- ref_samples
       rz$Exon <- exon_range
       rz$ExonLabel <- exon_labels
+      rz$Px <- px
+      rz$GeneGroup <- gene_group
       tidyr::pivot_longer(rz, cols = all_of(ref_samples), names_to = "RefName", values_to = "Z")
     },
     ref_cov     = ref_cov,
@@ -397,7 +410,8 @@ if (length(samples) == 0) {
             " | NUM_REFS: ", call$NUM_REFS, "*\n\n", sep = "")
 
         plot_data <- get_canope_plot_data(call, params$counts, params$bed_file,
-                                          params$models, params$refs)
+                                          params$models, params$refs,
+                                          gene_gap = params$settings$plot_gene_gap %||% 1)
 
         if (is.null(plot_data)) {
           cat("*(Insufficient data to generate plot)*\n")
@@ -429,8 +443,8 @@ if (length(samples) == 0) {
         }
 
         # --- Panel 1: log2(Observed / Expected) ratio with NB CI ribbon ---
-        p_ratio <- ggplot(plot_data$ratio_df, aes(x = Exon)) +
-          geom_ribbon(aes(ymin = CI_low, ymax = CI_high), fill = "grey85", alpha = 0.5) +
+        p_ratio <- ggplot(plot_data$ratio_df, aes(x = Px)) +
+          geom_ribbon(aes(ymin = CI_low, ymax = CI_high, group = GeneGroup), fill = "grey85", alpha = 0.5) +
           geom_hline(yintercept = 0, linetype = "dashed", colour = "grey40") +
           geom_point(data = subset(plot_data$ratio_df, !Affected),
                     aes(y = Ratio, color = "Reference range",
@@ -447,11 +461,12 @@ if (length(samples) == 0) {
           theme_bw() +
           scale_color_manual(values = c("Reference range" = "steelblue", "Affected exon(s)" = "red"), name = NULL) +
           theme(legend.position = "top", axis.text.x = element_text(angle = 45, size = 8, hjust = 1)) +
-          scale_x_continuous(breaks = plot_data$ratio_df$Exon, labels = plot_data$ratio_df$ExonLabel)
+          scale_x_continuous(breaks = plot_data$ratio_df$Px, labels = plot_data$ratio_df$ExonLabel)
 
         # --- Panel 2: log2 coverage (test + references) ---
         obs_df <- data.frame(
           Exon = plot_data$exon_range, ExonLabel = plot_data$exon_labels,
+          Px = plot_data$px, GeneGroup = plot_data$gene_group,
           Coverage = plot_data$test_log,
           Group = ifelse(plot_data$affected, "Affected exon(s)", "Test sample"),
           SampleID = plot_data$sample,
@@ -461,17 +476,17 @@ if (length(samples) == 0) {
 
         p_cov <- ggplot() +
           geom_point(data = subset(p_cov_data, Group == "Reference samples"),
-                    aes(x = Exon, y = Coverage, color = Group,
+                    aes(x = Px, y = Coverage, color = Group,
                         text = paste0("Sample: ", RefName, "<br>Exon: ", ExonLabel,
                                       "<br>log2 coverage: ", round(Coverage, 3))),
                     alpha = 0.6, size = 2.5) +
           geom_point(data = subset(p_cov_data, Group == "Test sample"),
-                    aes(x = Exon, y = Coverage, color = Group,
+                    aes(x = Px, y = Coverage, color = Group,
                         text = paste0("Sample: ", SampleID, "<br>Exon: ", ExonLabel,
                                       "<br>log2 coverage: ", round(Coverage, 3))),
                     size = 2.5) +
           geom_point(data = subset(p_cov_data, Group == "Affected exon(s)"),
-                    aes(x = Exon, y = Coverage, color = Group,
+                    aes(x = Px, y = Coverage, color = Group,
                         text = paste0("Sample: ", SampleID, "<br>Exon: ", ExonLabel,
                                       "<br>log2 coverage: ", round(Coverage, 3),
                                       "<br>Confidence: ", conf_str)),
@@ -481,7 +496,7 @@ if (length(samples) == 0) {
           scale_color_manual(values = c("Reference samples" = "grey50", "Test sample" = "blue",
                                         "Affected exon(s)" = "red"), name = NULL) +
           theme(legend.position = "top", axis.text.x = element_text(angle = 45, size = 8, hjust = 1)) +
-          scale_x_continuous(breaks = plot_data$exon_range, labels = plot_data$exon_labels)
+          scale_x_continuous(breaks = plot_data$px, labels = plot_data$exon_labels)
 
         # --- Panel 3 (NEW): Z-score vs. references ---
         z_ref_df <- plot_data$ref_z_df
@@ -491,22 +506,22 @@ if (length(samples) == 0) {
         z_test_df$IsTest <- TRUE
 
         p_z <- ggplot() +
-          geom_line(data = z_ref_df, aes(x = Exon, y = Z, group = RefName),
+          geom_line(data = z_ref_df, aes(x = Px, y = Z, group = interaction(RefName, GeneGroup, drop = TRUE)),
                    colour = "gray60", linewidth = 0.6, alpha = 0.7) +
           geom_point(data = z_ref_df,
-                    aes(x = Exon, y = Z, group = RefName,
+                    aes(x = Px, y = Z, group = RefName,
                         text = paste0("Sample: ", RefName, "<br>Exon: ", ExonLabel,
                                       "<br>Z-score: ", round(Z, 2))),
                     colour = "gray60", size = 1.5, alpha = 0.7) +
-          geom_line(data = z_test_df, aes(x = Exon, y = Z, group = RefName),
+          geom_line(data = z_test_df, aes(x = Px, y = Z, group = GeneGroup),
                    colour = "red", linewidth = 1.1) +
           geom_point(data = subset(z_test_df, !Affected),
-                    aes(x = Exon, y = Z,
+                    aes(x = Px, y = Z,
                         text = paste0("Sample: ", RefName, "<br>Exon: ", ExonLabel,
                                       "<br>Z-score: ", round(Z, 2))),
                     colour = "red", size = 2.2) +
           geom_point(data = subset(z_test_df, Affected),
-                    aes(x = Exon, y = Z,
+                    aes(x = Px, y = Z,
                         text = paste0("Sample: ", RefName, "<br>Exon: ", ExonLabel,
                                       "<br>Z-score: ", round(Z, 2),
                                       "<br>Confidence: ", conf_str)),
@@ -516,7 +531,7 @@ if (length(samples) == 0) {
                subtitle = "Test sample (red) — gray lines are individual reference samples") +
           theme_bw() +
           theme(legend.position = "none", axis.text.x = element_text(angle = 45, size = 8, hjust = 1)) +
-          scale_x_continuous(breaks = plot_data$exon_range, labels = plot_data$exon_labels)
+          scale_x_continuous(breaks = plot_data$px, labels = plot_data$exon_labels)
 
         w_ratio <- ggplotly(p_ratio, tooltip = "text", height = 360) %>%
           layout(margin = list(t = 60, b = 80), legend = list(orientation = "h", y = 1.15))

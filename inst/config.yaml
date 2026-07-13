@@ -4,11 +4,11 @@
 # GC content computation: either provide fasta_file + bed_file OR bsgenome_pkg + bed_file
 # fasta_file: "data/hg19.fa"   # Uncomment to use FASTA
 bsgenome_pkg: "BSgenome.Hsapiens.UCSC.hg19"   # Alternative: use BSgenome
-samples: "data/"                    # Directory containing .bam files
-bed_file: "data/test.bed"           # Target regions BED file
+samples: "data/TEST"                    # Directory containing .bam files
+bed_file: "data/TEST/TEST.bed"           # Target regions BED file
 
 # Output settings
-output_dir: "results"               # Directory for all output files
+output_dir: "results_ROI_nopadding"               # Directory for all output files
 output_prefix: "TEST"               # Prefix for output file names
 
 # Core HMM / CNV calling parameters
@@ -36,6 +36,12 @@ bed_process_args:                   # Extra args passed to process_bed_file()
   exon_sep: "[_()]"
   gene_name_keep: "3"
   auto_exon_number: false
+  off_target_pattern: "^HorsROI"    # Regex (case-sensitive) identifying off-target/filler intervals (e.g. backbone probes) that are NOT real gene exons; null/"" disables this
+  off_target_handling: "na"         # "na" (keep interval, exclude from exon numbering), "remove" (drop the rows), or "merge" (attach to nearest neighbouring real gene)
+
+# Terminal-exon padding / plot gene-gap spacing
+pad_terminal_exons: 0               # Bases to extend the outward edge of each gene's first/last exon (0 = off); reduces 0/low counts at gene boundaries without overlapping neighbouring targets. Only applies when extracting fresh from BAMs (ignored if reads_file is used).
+plot_gene_gap: 1                    # Extra x-axis units of blank space between a gene's last exon and the next gene's first exon, in every PDF/report panel (0 = off)
 
 # QC thresholds
 qc_min_corr: 0.98
