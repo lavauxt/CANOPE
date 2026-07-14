@@ -222,7 +222,7 @@ compute_gc_from_bed <- function(bsgenome_pkg, bed_input) {
     end.field = "end",
     seqnames.field = "chromosome",
     keep.extra.columns = TRUE,
-    starts.in.df.are.0based = TRUE    # <-- FIX: BED uses 0-based start
+    starts.in.df.are.0based = TRUE
   )
 
   # ---- 3. BSgenome sequence info and chromosome mapping ----

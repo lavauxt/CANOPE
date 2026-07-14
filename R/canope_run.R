@@ -129,7 +129,7 @@ run_canope <- function(
     qc_zscore = 3, exon_mad_quantile = 0.90,
     gc_extreme_filter = c(0.15, 0.85), min_exon_mean = 20,
     output_file = "CNVCall.csv", rdata_output = "canope_workspace.RData",
-    output_prefix = NULL,  # <-- NEW
+    output_prefix = NULL,
     refbams_file = NULL, ref_reads = NULL, bed_file = NULL,
     coverage_backend = c("bioconductor", "megadepth"),
     megadepth_op = c("sum", "mean"), megadepth_threads = 1L,
@@ -187,7 +187,7 @@ run_canope <- function(
 
   # ── BED preprocessing (optional) ─────────────────────────────────────────
   if (!is.null(bed_file) && !identical(bed_process, "NO")) {
-    processed_bed <- file.path(out_dir, "processed.bed")
+    processed_bed <- file.path(out_dir, paste0(output_prefix, "_processed.bed"))
     log_msg("INFO", sprintf("Running process_bed_file(mode = '%s') on %s", bed_process, bed_file))
     do.call(process_bed_file, c(
       list(input_bed = bed_file, output_bed = processed_bed, bed_process = bed_process),
@@ -243,7 +243,7 @@ run_canope <- function(
             NULL
           })
       }
-      padded_bed <- file.path(out_dir, "padded.bed")
+      padded_bed <- file.path(out_dir, paste0(output_prefix, "_padded.bed"))
       log_msg("INFO", sprintf("Applying terminal-exon padding (%d bp) to %s", pad_terminal_exons, bed_file))
       pad_bed_file(bed_file, padded_bed, padding = pad_terminal_exons, chr_lengths = chr_lengths_for_padding)
       bed_file <- padded_bed
@@ -280,7 +280,6 @@ run_canope <- function(
     canope.reads_un <- cbind(coords, counts_df)
   }
 
-  # ===== FIX: Force all sample columns to numeric =====
   meta_cols <- c("chromosome", "start", "end", "GENE", "target", "gc")
   sample_cols <- setdiff(colnames(canope.reads_un), meta_cols)
   for (col in sample_cols) {
@@ -550,7 +549,7 @@ run_canope <- function(
         rdata_file = rdata_output,
         output_dir = plot_dir,
         modechrom = modechrom,
-        prefix = output_prefix,   # <-- pass the prefix
+        prefix = output_prefix,
         gene_gap = plot_gene_gap
       )
     }
@@ -623,7 +622,7 @@ run_canope <- function(
         rdata_output = rdata_output,
         qc_metrics_file = qc_metrics_path,
         output_dir = report_output_dir,
-        prefix = report_prefix,   # <-- pass without "CANOPE_"
+        prefix = report_prefix,
         settings = c(list(low_confidence_genes = c("PMS2", "SMN1", "CYP2D6", "HBA1", "HBA2",
                                                     "STRC", "CYP21A2", "GBA1", "CFTR"),
                           qc_min_cov = qc_min_cov, qc_min_total_reads = qc_min_total_reads,
