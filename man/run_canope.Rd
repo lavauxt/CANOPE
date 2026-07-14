@@ -27,6 +27,7 @@ run_canope(
   min_exon_mean = 20,
   output_file = "CNVCall.csv",
   rdata_output = "canope_workspace.RData",
+  output_prefix = NULL,
   refbams_file = NULL,
   ref_reads = NULL,
   bed_file = NULL,
@@ -105,6 +106,9 @@ run_canope(
 \item{output_file}{Character. Path for CSV output.}
 
 \item{rdata_output}{Character. Path for RData workspace output.}
+
+\item{output_prefix}{Character. Base prefix for all output files (e.g. "CANOPE_TEST").
+If NULL, derived from output_file (strips "_CNVCall.csv").}
 
 \item{refbams_file}{Character or NULL. Optional reference BAM list.}
 

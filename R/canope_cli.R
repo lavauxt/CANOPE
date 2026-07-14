@@ -76,8 +76,9 @@ canope <- function(config_path = "config.yaml", ...) {
   # Output files
   out_dir <- output$dir %||% cfg$output_dir %||% "."
   out_prefix <- output$prefix %||% cfg$output_prefix %||% "CANOPE"
-  args$output_file   <- file.path(out_dir, paste0(out_prefix, "_CNVCall.csv"))
-  args$rdata_output  <- file.path(out_dir, paste0(out_prefix, "_workspace.RData"))
+  args$output_file   <- file.path(out_dir, paste0("CANOPE_", out_prefix, "_CNVCall.csv"))
+  args$rdata_output  <- file.path(out_dir, paste0("CANOPE_", out_prefix, "_workspace.RData"))
+  args$output_prefix <- paste0("CANOPE_", out_prefix)  # <-- pass the full prefix to run_canope
 
   # Settings
   args$modechrom   <- settings$modechrom %||% cfg$modechrom %||% "A"

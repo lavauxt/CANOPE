@@ -29,6 +29,8 @@
 #' @param min_exon_mean      Numeric. Minimum mean count to retain a target.
 #' @param output_file        Character. Path for CSV output.
 #' @param rdata_output       Character. Path for RData workspace output.
+#' @param output_prefix      Character. Base prefix for all output files (e.g. "CANOPE_TEST").
+#'                           If NULL, derived from output_file (strips "_CNVCall.csv").
 #' @param refbams_file       Character or NULL. Optional reference BAM list.
 #' @param ref_reads          Character or NULL. Pre-computed reference counts table.
 #' @param bed_file           Character or NULL. BED file for BAM coverage extraction
@@ -127,6 +129,7 @@ run_canope <- function(
     qc_zscore = 3, exon_mad_quantile = 0.90,
     gc_extreme_filter = c(0.15, 0.85), min_exon_mean = 20,
     output_file = "CNVCall.csv", rdata_output = "canope_workspace.RData",
+    output_prefix = NULL,  # <-- NEW
     refbams_file = NULL, ref_reads = NULL, bed_file = NULL,
     coverage_backend = c("bioconductor", "megadepth"),
     megadepth_op = c("sum", "mean"), megadepth_threads = 1L,
@@ -148,9 +151,27 @@ run_canope <- function(
   coverage_backend <- match.arg(coverage_backend)
   megadepth_op <- match.arg(megadepth_op)
 
+  # ---- Derive output prefix if not given ----
+  if (is.null(output_prefix)) {
+    base <- basename(output_file)
+    if (grepl("_CNVCall\\.csv$", base)) {
+      output_prefix <- sub("_CNVCall\\.csv$", "", base)
+    } else {
+      output_prefix <- tools::file_path_sans_ext(base)
+    }
+  }
+  # Ensure prefix starts with "CANOPE_"
+  if (!grepl("^CANOPE_", output_prefix)) {
+    output_prefix <- paste0("CANOPE_", output_prefix)
+  }
+
   out_dir <- dirname(output_file)
   if (out_dir == "") out_dir <- "."
-  if (is.null(log_file)) log_file <- file.path(out_dir, "canope_pipeline.log")
+
+  # ---- Use prefix for all derived output paths ----
+  if (is.null(log_file)) {
+    log_file <- file.path(out_dir, paste0(output_prefix, "_pipeline.log"))
+  }
   dir.create(dirname(log_file), showWarnings = FALSE, recursive = TRUE)
   log_con <- file(log_file, open = "a")
   log_msg <- function(level, ...) {
@@ -205,14 +226,6 @@ run_canope <- function(
 
   } else {
     # ── Terminal-exon padding (optional; ported from ECHO) ─────────────────
-    # Only applied here, in the fresh-from-BAMs branch: bed_file is about to
-    # be handed to both the coverage extractor and (below) the GC
-    # computation, so padding it once here keeps counts and GC content on
-    # the same (padded) window. A reads_file, by contrast, was already
-    # extracted over some fixed window by an earlier run -- padding
-    # bed_file for GC alone in that case would desync GC from the counts
-    # it's paired with, so pad_terminal_exons is ignored when reads_file is
-    # supplied.
     if (!is.null(pad_terminal_exons) && !is.na(pad_terminal_exons) && pad_terminal_exons > 0) {
       chr_lengths_for_padding <- NULL
       if (!is.null(fasta_file) && file.exists(fasta_file)) {
@@ -533,15 +546,22 @@ run_canope <- function(
 
     if (generate_plots_flag && nrow(final_cnvs) > 0) {
       log_msg("INFO", "Generating static CNV plots")
-      generate_plots(rdata_file = rdata_output, output_dir = plot_dir, modechrom = modechrom,
-                     gene_gap = plot_gene_gap)
+      generate_plots(
+        rdata_file = rdata_output,
+        output_dir = plot_dir,
+        modechrom = modechrom,
+        prefix = output_prefix,   # <-- pass the prefix
+        gene_gap = plot_gene_gap
+      )
     }
   }
 
   # ── QC metrics ───────────────────────────────────────────────────────────
   qc_metrics_path <- NULL
   if (run_qc_metrics) {
-    if (is.null(qc_output_file)) qc_output_file <- file.path(out_dir, "CANOPE_QC_metrics.tsv")
+    if (is.null(qc_output_file)) {
+      qc_output_file <- file.path(out_dir, paste0(output_prefix, "_QC_metrics.tsv"))
+    }
     log_msg("INFO", "Computing QC metrics")
     tryCatch({
       bed_for_qc <- canope.reads[, c("chromosome", "start", "end", "GENE")]
@@ -557,7 +577,9 @@ run_canope <- function(
 
   # ── PCA of coverage profiles ─────────────────────────────────────────────
   if (pca_plot && length(target_samples) >= 3) {
-    if (is.null(pca_output_file)) pca_output_file <- file.path(out_dir, "CANOPE_PCA.pdf")
+    if (is.null(pca_output_file)) {
+      pca_output_file <- file.path(out_dir, paste0(output_prefix, "_PCA.pdf"))
+    }
     log_msg("INFO", "Generating coverage PCA plot")
     color_by <- NULL
     if (!is.null(sample_table) && file.exists(sample_table)) {
@@ -573,7 +595,9 @@ run_canope <- function(
 
   # ── VCF export ───────────────────────────────────────────────────────────
   if (export_vcf && nrow(final_cnvs) > 0) {
-    if (is.null(vcf_output)) vcf_output <- file.path(out_dir, "CANOPE_calls.vcf")
+    if (is.null(vcf_output)) {
+      vcf_output <- file.path(out_dir, paste0(output_prefix, "_calls.vcf"))
+    }
     log_msg("INFO", "Exporting CNV calls to VCF")
     tryCatch(export_canope_to_vcf(final_cnvs, vcf_output),
             error = function(e) log_msg("WARNING", "VCF export failed: ", conditionMessage(e)))
@@ -591,11 +615,15 @@ run_canope <- function(
   # ── Interactive HTML report ──────────────────────────────────────────────
   if (report && nrow(final_cnvs) > 0) {
     if (is.null(report_output_dir)) report_output_dir <- out_dir
+    # Strip leading "CANOPE_" to avoid duplication (report will add it)
+    report_prefix <- sub("^CANOPE_", "", output_prefix)
     log_msg("INFO", "Rendering interactive HTML report")
     tryCatch(
       generate_canope_report(
-        rdata_output = rdata_output, qc_metrics_file = qc_metrics_path,
+        rdata_output = rdata_output,
+        qc_metrics_file = qc_metrics_path,
         output_dir = report_output_dir,
+        prefix = report_prefix,   # <-- pass without "CANOPE_"
         settings = c(list(low_confidence_genes = c("PMS2", "SMN1", "CYP2D6", "HBA1", "HBA2",
                                                     "STRC", "CYP21A2", "GBA1", "CFTR"),
                           qc_min_cov = qc_min_cov, qc_min_total_reads = qc_min_total_reads,
