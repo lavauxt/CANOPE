@@ -518,8 +518,7 @@ if (length(samples) == 0) {
                                       "<br>Confidence: ", conf_str)),
                     colour = "red", size = 2.8) +
           geom_hline(yintercept = 0, linetype = "dashed", colour = "grey40") +
-          labs(y = "Z-score vs. references", x = NULL,
-              subtitle = "Test sample (blue, non‑affected; red, affected) — gray points are individual reference samples") +
+          labs(y = "Z-score vs. references", x = NULL) +
           theme_bw() +
           theme(legend.position = "none", axis.text.x = element_text(angle = 45, size = 8, hjust = 1)) +
           scale_x_continuous(breaks = plot_data$px, labels = plot_data$exon_labels)

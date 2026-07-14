@@ -371,8 +371,7 @@ create_zscore_plot <- function(model, exon_range, target_ids, sample_name, ref_s
     ggplot2::geom_hline(yintercept = 0, linetype = "dashed") +
     ggplot2::coord_cartesian(ylim = c(-z_lim, z_lim)) +
     ggplot2::theme_bw() +
-    ggplot2::labs(x = "", y = "Z-score vs references",
-                  subtitle = "Test sample (red) with CNV targets highlighted")
+    ggplot2::labs(x = "", y = "Z-score vs references")
 
   apply_xaxis_formatting(p, single_chr, prev, exon_range, exon_index, px)
 }
