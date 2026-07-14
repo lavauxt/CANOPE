@@ -429,7 +429,7 @@ create_coverage_plot <- function(cov_data, pt_data, single_chr, prev, exon_range
       ggplot2::aes(x = px, y = coverage, color = color_group), size = 3
     ) +
     ggplot2::scale_colour_manual(values = cols, labels = labels, guide = "legend") +
-    ggplot2::labs(y = "log2(Coverage + 0.5)", x = NULL) +
+    ggplot2::labs(y = "log2(Coverage)", x = NULL) +
     ggplot2::theme_bw() +
     ggplot2::theme(legend.position = "top", legend.title = ggplot2::element_blank())
   
