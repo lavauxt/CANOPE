@@ -590,7 +590,7 @@ run_canope <- function(
 
   # ── Interactive HTML report ──────────────────────────────────────────────
   if (report && nrow(final_cnvs) > 0) {
-    if (is.null(report_output_dir)) report_output_dir <- file.path(out_dir, "report")
+    if (is.null(report_output_dir)) report_output_dir <- out_dir
     log_msg("INFO", "Rendering interactive HTML report")
     tryCatch(
       generate_canope_report(

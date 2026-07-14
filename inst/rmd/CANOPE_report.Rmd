@@ -70,11 +70,7 @@ get_canope_plot_data <- function(call_row, counts, bed_file, models, refs, flank
   if (!single_chr) exon_range <- exon_range[bed_chr == target_chr]
   if (length(exon_range) == 0) return(NULL)
 
-  # Gap-inserted x-axis positions, so a gene's last exon and the next
-  # gene's first exon get real blank space between them instead of
-  # sitting flush like ordinary neighbouring exons. Ported from ECHO;
-  # shared with generate_plots.R via compute_gene_gap_positions() so PDF
-  # and HTML report panels agree.
+  # Gap-inserted x-axis positions
   gap_pos    <- compute_gene_gap_positions(bed_file, exon_range, gap = gene_gap)
   px         <- gap_pos$px
   gene_group <- gap_pos$gene_group
@@ -86,14 +82,8 @@ get_canope_plot_data <- function(call_row, counts, bed_file, models, refs, flank
   model_var  <- model_lookup(models[[sample]], "var_estimate", bed_file$target[exon_range])
 
   pseudocount   <- 0.5
-  # Raw counts, kept only for the display coverage panel (test_log / ref_cov),
-  # matching the raw-coverage panel in the static PDFs.
   test_counts   <- counts[exon_range, sample]
 
-  # The ratio/CI and z-score panels must use the model's own test_counts/
-  # ref_matrix (not raw `counts`), since model_mean/model_var were fit on
-  # call_cnvs()'s internally normalised data -- comparing raw counts against
-  # that normalised model would mix two depth scales.
   test_counts_model <- model_lookup(models[[sample]], "test_counts", bed_file$target[exon_range])
   expected_safe <- pmax(model_mean, 1) + pseudocount
 
@@ -107,11 +97,8 @@ get_canope_plot_data <- function(call_row, counts, bed_file, models, refs, flank
   hi <- log2((maxs + pseudocount) / expected_safe)
 
   exon_labels <- compute_exon_index(bed_file)[exon_range]
+  gene_names  <- bed_file$GENE[exon_range]   # <-- ADDED for tooltips
 
-  # Z-scores vs. references. Uses the same robust, floored var_estimate as
-  # the ratio/NB-interval panel above (rather than a raw per-target SD across
-  # just the handful of references), so all panels agree with the model and
-  # with each other.
   ref_mat <- model_matrix_lookup(models[[sample]], "ref_matrix", bed_file$target[exon_range])
   z_means <- rowMeans(ref_mat, na.rm = TRUE)
   z_sds   <- sqrt(pmax(model_var, 1))
@@ -121,33 +108,32 @@ get_canope_plot_data <- function(call_row, counts, bed_file, models, refs, flank
 
   ref_cov <- do.call(rbind, lapply(ref_samples, function(r) {
     data.frame(
-      Exon = exon_range, ExonLabel = exon_labels, Px = px, GeneGroup = gene_group,
+      Exon = exon_range, ExonLabel = exon_labels, Gene = gene_names, Px = px, GeneGroup = gene_group,
       Coverage = log2(counts[exon_range, r] + pseudocount),
       Group = "Reference samples", RefName = r,
       stringsAsFactors = FALSE
     )
   }))
 
-  # Per-call diagnostic: does this window's background (non-called)
-  # coverage fit the model as well as the interval implies?
   bg_calib <- check_background_calibration(ratio, lo, hi, exon_range %in% cnv_rows)
 
   list(
     sample      = sample,
     exon_range  = exon_range,
     exon_labels = exon_labels,
+    gene_names  = gene_names,   # <-- ADDED
     px          = px,
     gene_group  = gene_group,
     affected    = exon_range %in% cnv_rows,
     test_log    = log2(test_counts + pseudocount),
     bg_calibration = bg_calib,
     ratio_df    = data.frame(
-      Exon = exon_range, ExonLabel = exon_labels, Px = px, GeneGroup = gene_group,
+      Exon = exon_range, ExonLabel = exon_labels, Gene = gene_names, Px = px, GeneGroup = gene_group,
       Ratio = ratio, CI_low = lo, CI_high = hi,
       Affected = exon_range %in% cnv_rows
     ),
     z_df = data.frame(
-      Exon = exon_range, ExonLabel = exon_labels, Px = px, GeneGroup = gene_group,
+      Exon = exon_range, ExonLabel = exon_labels, Gene = gene_names, Px = px, GeneGroup = gene_group,
       Z = sample_z, Affected = exon_range %in% cnv_rows
     ),
     ref_z_df = {
@@ -155,6 +141,7 @@ get_canope_plot_data <- function(call_row, counts, bed_file, models, refs, flank
       colnames(rz) <- ref_samples
       rz$Exon <- exon_range
       rz$ExonLabel <- exon_labels
+      rz$Gene <- gene_names   # <-- ADDED
       rz$Px <- px
       rz$GeneGroup <- gene_group
       tidyr::pivot_longer(rz, cols = all_of(ref_samples), names_to = "RefName", values_to = "Z")
@@ -449,11 +436,13 @@ if (length(samples) == 0) {
           geom_point(data = subset(plot_data$ratio_df, !Affected),
                     aes(y = Ratio, color = "Reference range",
                         text = paste0("Sample: ", plot_data$sample, "<br>Exon: ", ExonLabel,
+                                      "<br>Gene: ", Gene,
                                       "<br>log2(Obs/Exp): ", round(Ratio, 3))),
                     size = 3) +
           geom_point(data = subset(plot_data$ratio_df, Affected),
                     aes(y = Ratio, color = "Affected exon(s)",
                         text = paste0("Sample: ", plot_data$sample, "<br>Exon: ", ExonLabel,
+                                      "<br>Gene: ", Gene,
                                       "<br>log2(Obs/Exp): ", round(Ratio, 3),
                                       "<br>Confidence: ", conf_str)),
                     size = 3.5) +
@@ -478,16 +467,19 @@ if (length(samples) == 0) {
           geom_point(data = subset(p_cov_data, Group == "Reference samples"),
                     aes(x = Px, y = Coverage, color = Group,
                         text = paste0("Sample: ", RefName, "<br>Exon: ", ExonLabel,
+                                      "<br>Gene: ", Gene,
                                       "<br>log2 coverage: ", round(Coverage, 3))),
                     alpha = 0.6, size = 2.5) +
           geom_point(data = subset(p_cov_data, Group == "Test sample"),
                     aes(x = Px, y = Coverage, color = Group,
                         text = paste0("Sample: ", SampleID, "<br>Exon: ", ExonLabel,
+                                      "<br>Gene: ", Gene,
                                       "<br>log2 coverage: ", round(Coverage, 3))),
                     size = 2.5) +
           geom_point(data = subset(p_cov_data, Group == "Affected exon(s)"),
                     aes(x = Px, y = Coverage, color = Group,
                         text = paste0("Sample: ", SampleID, "<br>Exon: ", ExonLabel,
+                                      "<br>Gene: ", Gene,
                                       "<br>log2 coverage: ", round(Coverage, 3),
                                       "<br>Confidence: ", conf_str)),
                     size = 3.5) +
@@ -509,22 +501,25 @@ if (length(samples) == 0) {
           geom_point(data = z_ref_df,
                     aes(x = Px, y = Z, group = RefName,
                         text = paste0("Sample: ", RefName, "<br>Exon: ", ExonLabel,
+                                      "<br>Gene: ", Gene,
                                       "<br>Z-score: ", round(Z, 2))),
                     colour = "gray60", size = 1.5, alpha = 0.7) +
           geom_point(data = subset(z_test_df, !Affected),
                     aes(x = Px, y = Z,
                         text = paste0("Sample: ", RefName, "<br>Exon: ", ExonLabel,
+                                      "<br>Gene: ", Gene,
                                       "<br>Z-score: ", round(Z, 2))),
-                    colour = "red", size = 2.2) +
+                    colour = "blue", size = 2.2) +
           geom_point(data = subset(z_test_df, Affected),
                     aes(x = Px, y = Z,
                         text = paste0("Sample: ", RefName, "<br>Exon: ", ExonLabel,
+                                      "<br>Gene: ", Gene,
                                       "<br>Z-score: ", round(Z, 2),
                                       "<br>Confidence: ", conf_str)),
-                    colour = "darkred", size = 2.8) +
+                    colour = "red", size = 2.8) +
           geom_hline(yintercept = 0, linetype = "dashed", colour = "grey40") +
           labs(y = "Z-score vs. references", x = NULL,
-               subtitle = "Test sample (red) — gray points are individual reference samples") +
+              subtitle = "Test sample (blue, non‑affected; red, affected) — gray points are individual reference samples") +
           theme_bw() +
           theme(legend.position = "none", axis.text.x = element_text(angle = 45, size = 8, hjust = 1)) +
           scale_x_continuous(breaks = plot_data$px, labels = plot_data$exon_labels)

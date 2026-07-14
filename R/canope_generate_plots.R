@@ -129,10 +129,7 @@ generate_plots <- function(
       next
     }
 
-    # Gap-inserted x-axis positions, so every panel shows a visual break
-    # between a gene's last exon and the next gene's first exon rather
-    # than plotting them as if they were plain neighbouring exons. Ported
-    # from ECHO; see compute_gene_gap_positions().
+    # Gap-inserted x-axis positions
     gap_pos    <- compute_gene_gap_positions(bed_file, exon_range, gap = gene_gap)
     px         <- gap_pos$px
     gene_group <- gap_pos$gene_group
@@ -189,12 +186,10 @@ generate_plots <- function(
       )
       pt_data <- pt_data[pt_data$color_group == "Affected exon(s)", , drop = FALSE]
 
-      # ===== UPDATED: pass sample_name to coverage plot =====
       p_cov <- create_coverage_plot(
         cov_data, pt_data, single_chr, prev, exon_range, exon_index, px,
         sample_name = sample_name
       )
-      # ====================================================
 
       p_genes <- create_gene_tile_plot(bed_file, exon_range, single_chr, prev, new_chr, px)
       test_counts   <- model_lookup(models[[sample_name]], "test_counts", bed_file$target[exon_range])
@@ -233,9 +228,6 @@ generate_plots <- function(
       }
 
       p_ci <- ggplot2::ggplot(ci_data, ggplot2::aes(x = px)) +
-        # group = gene_group breaks the ribbon into one piece per gene, so
-        # it doesn't visually bridge the blank space at a gene boundary.
-        # Ported from ECHO.
         ggplot2::geom_ribbon(ggplot2::aes(ymin = lo, ymax = hi, group = gene_group), fill = "grey90", colour = NA) +
         ggplot2::geom_hline(yintercept = 0, linetype = "dashed", colour = "black") +
         ggplot2::geom_point(ggplot2::aes(y = ratio, color = is_affected), size = 3) +
@@ -304,10 +296,6 @@ model_lookup <- function(model, field, target_ids) {
 
 
 #' Look Up Per-Target Model Statistics (matrix form)
-#'
-#' Same target-ID alignment as \code{\link{model_lookup}}, but for a
-#' matrix-valued model field (one row per target, one column per reference
-#' sample) such as \code{ref_matrix}.
 #' @noRd
 model_matrix_lookup <- function(model, field, target_ids) {
   mat <- model[[field]]
@@ -368,18 +356,17 @@ create_zscore_plot <- function(model, exon_range, target_ids, sample_name, ref_s
   z_df$series <- factor(z_df$series, levels = c(ref_samples, sample_name))
 
   p <- ggplot2::ggplot(z_df, ggplot2::aes(x = px, y = z)) +
-    # Points only -- no line joins reference or test z-scores across exons.
     ggplot2::geom_point(
       data = subset(z_df, series != sample_name),
       colour = "gray60", size = 1.5, alpha = 0.7
     ) +
     ggplot2::geom_point(
       data = subset(z_df, series == sample_name & !highlight),
-      colour = "red", size = 2.2
+      colour = "blue", size = 2.2
     ) +
     ggplot2::geom_point(
       data = subset(z_df, series == sample_name & highlight),
-      colour = "darkred", size = 2.8
+      colour = "red", size = 2.8
     ) +
     ggplot2::geom_hline(yintercept = 0, linetype = "dashed") +
     ggplot2::coord_cartesian(ylim = c(-z_lim, z_lim)) +
@@ -459,10 +446,6 @@ create_gene_tile_plot <- function(bed_file, exon_range, single_chr, prev, new_ch
   gene_names <- unique(bed_file$GENE[exon_range])
   gene_tiles <- data.frame(
     gene  = gene_names,
-    # mid/width computed on the gap-inserted px scale (not raw exon_range
-    # indices) so each gene's tile lines up with that gene's points/lines
-    # in the other panels, and adjacent tiles get real blank space between
-    # them at a gene boundary instead of sitting flush. Ported from ECHO.
     mid   = vapply(gene_names, function(g) mean(px[temp$GENE == g]), numeric(1)),
     width = vapply(gene_names, function(g) sum(temp$GENE == g), numeric(1)) - 0.5,
     y     = 1,
