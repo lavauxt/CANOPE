@@ -506,15 +506,11 @@ if (length(samples) == 0) {
         z_test_df$IsTest <- TRUE
 
         p_z <- ggplot() +
-          geom_line(data = z_ref_df, aes(x = Px, y = Z, group = interaction(RefName, GeneGroup, drop = TRUE)),
-                   colour = "gray60", linewidth = 0.6, alpha = 0.7) +
           geom_point(data = z_ref_df,
                     aes(x = Px, y = Z, group = RefName,
                         text = paste0("Sample: ", RefName, "<br>Exon: ", ExonLabel,
                                       "<br>Z-score: ", round(Z, 2))),
                     colour = "gray60", size = 1.5, alpha = 0.7) +
-          geom_line(data = z_test_df, aes(x = Px, y = Z, group = GeneGroup),
-                   colour = "red", linewidth = 1.1) +
           geom_point(data = subset(z_test_df, !Affected),
                     aes(x = Px, y = Z,
                         text = paste0("Sample: ", RefName, "<br>Exon: ", ExonLabel,
@@ -528,7 +524,7 @@ if (length(samples) == 0) {
                     colour = "darkred", size = 2.8) +
           geom_hline(yintercept = 0, linetype = "dashed", colour = "grey40") +
           labs(y = "Z-score vs. references", x = NULL,
-               subtitle = "Test sample (red) — gray lines are individual reference samples") +
+               subtitle = "Test sample (red) — gray points are individual reference samples") +
           theme_bw() +
           theme(legend.position = "none", axis.text.x = element_text(angle = 45, size = 8, hjust = 1)) +
           scale_x_continuous(breaks = plot_data$px, labels = plot_data$exon_labels)

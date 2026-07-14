@@ -8,7 +8,7 @@ samples: "data/TEST"                    # Directory containing .bam files
 bed_file: "data/TEST/TEST.bed"           # Target regions BED file
 
 # Output settings
-output_dir: "results_ROI_nopadding"               # Directory for all output files
+output_dir: "results"               # Directory for all output files
 output_prefix: "TEST"               # Prefix for output file names
 
 # Core HMM / CNV calling parameters

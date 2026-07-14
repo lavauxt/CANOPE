@@ -16,7 +16,7 @@
 #'   ECHO; see \code{\link{compute_gene_gap_positions}}. Default \code{1}.
 #' @param debug       Print extra messages.
 #'
-#' @importFrom ggplot2 ggplot geom_line geom_point geom_tile geom_ribbon geom_hline aes scale_color_manual theme theme_bw labs scale_x_continuous element_text element_blank
+#' @importFrom ggplot2 ggplot geom_point geom_tile geom_ribbon geom_hline aes scale_color_manual theme theme_bw labs scale_x_continuous element_text element_blank
 #' @importFrom grDevices pdf dev.off dev.list
 #' @importFrom grid grid.newpage grid.layout pushViewport viewport
 #' @importFrom stats ave qnbinom median sd
@@ -233,12 +233,11 @@ generate_plots <- function(
       }
 
       p_ci <- ggplot2::ggplot(ci_data, ggplot2::aes(x = px)) +
-        # group = gene_group breaks the ribbon/line into one piece per
-        # gene, so neither visually bridges the blank space at a gene
-        # boundary. Ported from ECHO.
+        # group = gene_group breaks the ribbon into one piece per gene, so
+        # it doesn't visually bridge the blank space at a gene boundary.
+        # Ported from ECHO.
         ggplot2::geom_ribbon(ggplot2::aes(ymin = lo, ymax = hi, group = gene_group), fill = "grey90", colour = NA) +
         ggplot2::geom_hline(yintercept = 0, linetype = "dashed", colour = "black") +
-        ggplot2::geom_line(ggplot2::aes(y = ratio, group = gene_group), colour = "steelblue", linewidth = 0.8) +
         ggplot2::geom_point(ggplot2::aes(y = ratio, color = is_affected), size = 3) +
         ggplot2::scale_color_manual(values = c("Observed" = "blue", "Affected" = "red")) +
         ggplot2::theme_bw() +
@@ -337,8 +336,9 @@ model_matrix_lookup <- function(model, field, target_ids) {
 #'   same order/subset as \code{bed_file}.
 #' @param px         Gap-inserted x-axis positions for \code{exon_range}
 #'   (see \code{\link{compute_gene_gap_positions}}), same order/length.
-#' @param gene_group Per-position gene-group id (same source), used to
-#'   break each line at a gene boundary rather than bridging it.
+#' @param gene_group Per-position gene-group id (same source). Retained on
+#'   the plotting data frame for parity with the other panels, though this
+#'   points-only panel has no line/ribbon layer for it to group.
 #' @noRd
 create_zscore_plot <- function(model, exon_range, target_ids, sample_name, ref_samples,
                                cnv_rows, single_chr, prev, exon_index, px, gene_group) {
@@ -368,22 +368,18 @@ create_zscore_plot <- function(model, exon_range, target_ids, sample_name, ref_s
   z_df$series <- factor(z_df$series, levels = c(ref_samples, sample_name))
 
   p <- ggplot2::ggplot(z_df, ggplot2::aes(x = px, y = z)) +
-    # group = interaction(series, gene_group): each series' line still
-    # breaks at a gene boundary, not just at a change of series. Ported
-    # from ECHO.
-    ggplot2::geom_line(
+    # Points only -- no line joins reference or test z-scores across exons.
+    ggplot2::geom_point(
       data = subset(z_df, series != sample_name),
-      ggplot2::aes(group = interaction(series, gene_group, drop = TRUE)),
-      colour = "gray60", linewidth = 0.6, alpha = 0.8
+      colour = "gray60", size = 1.5, alpha = 0.7
     ) +
-    ggplot2::geom_line(
-      data = subset(z_df, series == sample_name),
-      ggplot2::aes(group = gene_group),
-      colour = "red", linewidth = 1.2
+    ggplot2::geom_point(
+      data = subset(z_df, series == sample_name & !highlight),
+      colour = "red", size = 2.2
     ) +
     ggplot2::geom_point(
       data = subset(z_df, series == sample_name & highlight),
-      colour = "darkred", size = 2.5
+      colour = "darkred", size = 2.8
     ) +
     ggplot2::geom_hline(yintercept = 0, linetype = "dashed") +
     ggplot2::coord_cartesian(ylim = c(-z_lim, z_lim)) +
@@ -434,19 +430,9 @@ create_coverage_plot <- function(cov_data, pt_data, single_chr, prev, exon_range
               "Affected exon(s)" = "Affected exon(s)")
   
   p_cov <- ggplot2::ggplot() +
-    ggplot2::geom_line(
-      data = subset(cov_data, color_group == "Reference Sample"),
-      ggplot2::aes(x = px, y = coverage, group = group, color = color_group),
-      linetype = "dashed", linewidth = 1.1
-    ) +
     ggplot2::geom_point(
       data = subset(cov_data, color_group == "Reference Sample"),
       ggplot2::aes(x = px, y = coverage, color = color_group), size = 2
-    ) +
-    ggplot2::geom_line(
-      data = subset(cov_data, color_group == "Test Sample"),
-      ggplot2::aes(x = px, y = coverage, group = group, color = color_group),
-      linetype = "dashed", linewidth = 1.1
     ) +
     ggplot2::geom_point(
       data = subset(cov_data, color_group == "Test Sample"),
