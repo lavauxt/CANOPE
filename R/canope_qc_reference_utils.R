@@ -72,7 +72,6 @@ detect_outlier_samples <- function(counts, pseudocount = 0.5, z_threshold = 3) {
   med  <- median(sample_noise, na.rm = TRUE)
   mad0 <- stats::mad(sample_noise, na.rm = TRUE)
 
-  # Guard against mad0 == 0 (all samples identical noise) or a single sample
   z_scores  <- if (length(sample_noise) > 1L && is.finite(mad0) && mad0 > 0)
     (sample_noise - med) / mad0 else rep(0, length(sample_noise))
 
@@ -130,7 +129,6 @@ detect_problematic_exons <- function(
       !is.finite(gc_val)
   }
 
-  # Guarantee at least one exon per chromosome
   if (!is.null(chromosomes)) {
     for (chr in unique(chromosomes)) {
       idx <- which(chromosomes == chr)

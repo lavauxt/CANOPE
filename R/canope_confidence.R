@@ -41,7 +41,6 @@ score_canope_confidence <- function(
 ) {
   if (is.null(cnv_calls) || nrow(cnv_calls) == 0) return(cnv_calls)
 
-  # ── Guard: ensure required columns exist ──────────────────────────────────
   required <- c("CNV", "Q_SOME", "NUM_REFS", "MLCN", "NUM_TARG", "GENE")
   missing_cols <- setdiff(required, colnames(cnv_calls))
   if (length(missing_cols) > 0) {
@@ -56,21 +55,18 @@ score_canope_confidence <- function(
   num_refs <- as.integer(cnv_calls$NUM_REFS)
   num_targ <- as.integer(cnv_calls$NUM_TARG)
   mlcn     <- as.integer(cnv_calls$MLCN)
-  cnv_type <- toupper(as.character(cnv_calls$CNV))   # "DEL" or "DUP"
+  cnv_type <- toupper(as.character(cnv_calls$CNV)) 
   genes    <- as.character(cnv_calls$GENE)
 
-  # Is the MLCN consistent with the CNV call?
   mlcn_consistent <- (cnv_type == "DEL" & mlcn <= 1L) |
                      (cnv_type == "DUP" & mlcn >= 3L) |
-                     mlcn == 0L                          # homozygous deletion always consistent
+                     mlcn == 0L                         
 
-  # Gene flagged as difficult?
   gene_flagged <- vapply(genes, function(g) {
     syms <- trimws(unlist(strsplit(g, "[;, ]")))
     any(syms %in% low_confidence_genes)
   }, logical(1))
 
-  # ── Score ──────────────────────────────────────────────────────────────────
   cnv_calls$Confidence <- "LOW"
 
   high_cond <- !gene_flagged &
@@ -87,7 +83,6 @@ score_canope_confidence <- function(
   cnv_calls$Confidence[high_cond] <- "HIGH"
   cnv_calls$Confidence[med_cond]  <- "MEDIUM"
 
-  # ── Human-readable copy-number label ──────────────────────────────────────
   cnv_calls$CN_label <- dplyr::case_when(
     mlcn == 0L ~ "Hom. Del (CN=0)",
     mlcn == 1L ~ "Hem. Del (CN=1)",

@@ -55,7 +55,6 @@ compute_gc_from_fasta <- function(fasta_file, bed_input) {
   if (!requireNamespace("Biostrings", quietly = TRUE))
     stop("Package 'Biostrings' is required.")
 
-  # ---- Read BED ----
   if (is.character(bed_input) && length(bed_input) == 1 && file.exists(bed_input)) {
     bed_df <- utils::read.table(bed_input, header = FALSE, stringsAsFactors = FALSE)
   } else if (is.data.frame(bed_input)) {
@@ -64,28 +63,24 @@ compute_gc_from_fasta <- function(fasta_file, bed_input) {
     stop("'bed_input' must be a BED file path or a data frame.")
   }
 
-  # Ensure required columns
   if (all(c("V1", "V2", "V3") %in% colnames(bed_df))) {
     colnames(bed_df)[1:3] <- c("chromosome", "start", "end")
   }
   if (!all(c("chromosome", "start", "end") %in% colnames(bed_df)))
     stop("BED must contain chromosome, start, end columns.")
 
-  # Sort
   if (requireNamespace("gtools", quietly = TRUE)) {
     bed_df <- bed_df[gtools::mixedorder(bed_df$chromosome), ]
   } else {
     bed_df <- bed_df[order(bed_df$chromosome, bed_df$start), ]
   }
 
-  # ---- Open FASTA ----
   fa <- Rsamtools::FaFile(fasta_file)
   if (!file.exists(Rsamtools::index(fa)))
     stop("FASTA index (.fai) not found. Please run 'samtools faidx' on ", fasta_file)
 
   fa_seqnames <- as.character(GenomeInfoDb::seqnames(GenomicRanges::seqinfo(fa)))
 
-  # ---- Map BED chromosome names to FASTA names ----
   bed_chroms <- unique(bed_df$chromosome)
   chrom_map <- setNames(rep(NA_character_, length(bed_chroms)), bed_chroms)
 
@@ -101,7 +96,6 @@ compute_gc_from_fasta <- function(fasta_file, bed_input) {
         if (bc_chr %in% fa_seqnames) {
           chrom_map[bc] <- bc_chr
         } else {
-          # Try numeric mapping for X/Y/M
           bc_num <- suppressWarnings(as.numeric(bc))
           if (!is.na(bc_num)) {
             if (bc_num == 23 && "X" %in% fa_seqnames) chrom_map[bc] <- "X"
@@ -123,13 +117,12 @@ compute_gc_from_fasta <- function(fasta_file, bed_input) {
 
   if (nrow(bed_df) == 0) stop("No BED regions remain after chromosome filtering.")
 
-  # ---- Compute GC ----
   gc_vals <- numeric(nrow(bed_df))
   gene_names <- if ("GENE" %in% colnames(bed_df)) as.character(bed_df$GENE) else rep(NA, nrow(bed_df))
 
   for (i in seq_len(nrow(bed_df))) {
     chrom <- bed_df$chromosome[i]
-    start <- bed_df$start[i] + 1L   # BED is 0‑based
+    start <- bed_df$start[i] + 1L   
     end   <- bed_df$end[i]
     fa_chrom <- chrom_map[chrom]
 
@@ -175,7 +168,6 @@ compute_gc_from_fasta <- function(fasta_file, bed_input) {
 #' @return Data frame: chromosome, start, end, GENE, GC_CONTENT.
 #' @export
 compute_gc_from_bed <- function(bsgenome_pkg, bed_input) {
-  # ---- 0. Load the BSgenome package ----
   if (!is.character(bsgenome_pkg) || length(bsgenome_pkg) != 1) {
     stop("[ERROR] 'bsgenome_pkg' must be a single character string.")
   }
@@ -187,10 +179,8 @@ compute_gc_from_bed <- function(bsgenome_pkg, bed_input) {
     ))
   }
   
-  # Retrieve the actual BSgenome object dynamically
   genome_obj <- getExportedValue(bsgenome_pkg, bsgenome_pkg)
   
-  # ---- 1. Read and sort the BED input ----
   if (is.character(bed_input) && length(bed_input) == 1 && file.exists(bed_input)) {
     bed_df <- utils::read.table(bed_input, header = FALSE, stringsAsFactors = FALSE)
   } else if (is.data.frame(bed_input)) {
@@ -203,11 +193,6 @@ compute_gc_from_bed <- function(bsgenome_pkg, bed_input) {
     colnames(bed_df)[1:3] <- c("chromosome", "start", "end")
   }
 
-  # Sort BED by chromosome then start. NOTE: previously this re-sorted with
-  # plain order() right after gtools::mixedorder(), which silently discarded
-  # the natural numeric ordering (chr1, chr2, ..., chr10) in favour of plain
-  # lexicographic ordering (chr1, chr10, chr11, ..., chr2, ...). Fixed to
-  # actually keep the mixedorder() result when gtools is available.
   if (requireNamespace("gtools", quietly = TRUE)) {
     bed_df <- bed_df[gtools::mixedorder(bed_df$chromosome), ]
   } else {
@@ -215,7 +200,6 @@ compute_gc_from_bed <- function(bsgenome_pkg, bed_input) {
   }
   message("[INFO] BED regions sorted by chromosome and start.")
 
-  # ---- 2. Create GRanges (CRITICAL: BED is 0-based!) ----
   bed <- GenomicRanges::makeGRangesFromDataFrame(
     bed_df,
     start.field = "start",
@@ -225,11 +209,9 @@ compute_gc_from_bed <- function(bsgenome_pkg, bed_input) {
     starts.in.df.are.0based = TRUE
   )
 
-  # ---- 3. BSgenome sequence info and chromosome mapping ----
   genome_seqinfo <- GenomeInfoDb::seqinfo(genome_obj)
   fasta_chroms <- GenomeInfoDb::seqnames(genome_seqinfo)
 
-  # Map BED chromosome names to BSgenome names
   bed_chroms <- GenomeInfoDb::seqlevels(bed)
   chrom_map <- setNames(rep(NA_character_, length(bed_chroms)), bed_chroms)
 
@@ -265,7 +247,6 @@ compute_gc_from_bed <- function(bsgenome_pkg, bed_input) {
     }
   }
 
-  # Remove unmapped regions and drop unused seqlevels
   unmapped <- names(chrom_map)[is.na(chrom_map)]
   if (length(unmapped) > 0) {
     message("[WARNING] Dropping chromosomes not found in BSgenome: ",
@@ -278,21 +259,18 @@ compute_gc_from_bed <- function(bsgenome_pkg, bed_input) {
 
   if (length(bed) == 0) stop("[ERROR] No BED regions remain after chromosome filtering.")
 
-  # Rename seqlevels to match BSgenome
   new_levels <- chrom_map[GenomeInfoDb::seqlevels(bed)]
   if (any(is.na(new_levels))) {
     stop("[ERROR] Internal error: some seqlevels are NA after mapping. Check mapping logic.")
   }
   GenomeInfoDb::seqlevels(bed) <- new_levels
 
-  # Keep only seqlevels that are actually in the BSgenome
   keep_levels <- intersect(GenomeInfoDb::seqlevels(bed), fasta_chroms)
   if (length(keep_levels) == 0) {
     stop("[ERROR] No BED regions share seqlevels with the BSgenome.")
   }
   bed <- GenomeInfoDb::keepSeqlevels(bed, keep_levels, pruning.mode = "coarse")
 
-  # ---- 4. GC content extraction ----
   gc_freq <- numeric(length(bed))
   gene_names <- if (!is.null(bed$name)) as.character(bed$name) else rep(NA, length(bed))
 
@@ -303,11 +281,9 @@ compute_gc_from_bed <- function(bsgenome_pkg, bed_input) {
     seq_end   <- BiocGenerics::end(region)
 
     tryCatch({
-      seqs <- Biostrings::getSeq(genome_obj, region)  # returns DNAStringSet from BSgenome
+      seqs <- Biostrings::getSeq(genome_obj, region)  
       
-      # Check that we have at least one non-empty sequence
       if (length(seqs) > 0 && all(Biostrings::width(seqs) > 0)) {
-        # Use the whole DNAStringSet – avoids S4 coercion issues
         gc_freq[i] <- Biostrings::letterFrequency(seqs, letters = "GC", as.prob = TRUE)[1]
       } else {
         message(sprintf("[WARNING] Empty sequence for %s:%d-%d", seq_chrom, seq_start, seq_end))
@@ -322,7 +298,6 @@ compute_gc_from_bed <- function(bsgenome_pkg, bed_input) {
     })
   }
 
-  # Drop regions with NA GC content
   valid <- !is.na(gc_freq)
   if (sum(valid) == 0) {
     stop("[ERROR] All GC content computations failed. Check that the BSgenome ",

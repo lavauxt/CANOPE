@@ -137,11 +137,7 @@ call_cnvs <- function(
     ))
     counts <- counts[!unmapped, , drop = FALSE]
   }
-  # The HMM engines (hmm_engine.R / canoes_legacy_engine.R) step through
-  # targets with constructs like `for (i in 2:n)`; with n == 1 that becomes
-  # `2:1`, R's classic descending-sequence pitfall, which would silently
-  # index row 0 instead of erroring. Requiring >= 2 targets here turns that
-  # into a clear, immediate error instead.
+
   if (nrow(counts) < 2)
     stop("At least 2 targets are required after removing unrecognised chromosomes (found ",
          nrow(counts), ")")
@@ -186,9 +182,7 @@ call_cnvs <- function(
   if (length(reference_samples) < 3)
     stop("Too few valid reference samples for ", sample_name)
 
-  # ============================================================
-  # 2. NORMALISE REFERENCE SAMPLES – WITH SAFETY
-  # ============================================================
+
   samp_med <- median(counts[[sample_name]], na.rm = TRUE)
   for (nm in reference_samples) {
     ref_m <- median(counts[[nm]], na.rm = TRUE)
@@ -199,16 +193,13 @@ call_cnvs <- function(
   }
 
   b <- as.numeric(counts[[sample_name]])
-  # Force reference columns to be numeric before creating matrix A
+
   for (nm in reference_samples) {
     counts[[nm]] <- as.numeric(counts[[nm]])
   }
   A <- as.matrix(counts[, reference_samples, drop = FALSE])
   storage.mode(A) <- "numeric"  # ensure matrix is numeric
 
-  # ============================================================
-  # 3. NNLS WEIGHTING
-  # ============================================================
   set.seed(1L)
   boot_weights <- matrix(0, nrow = 50L, ncol = length(reference_samples))
   for (i in seq_len(50L)) {
@@ -220,9 +211,6 @@ call_cnvs <- function(
   sample_weights <- if (sum(weights) > 0) weights / sum(weights) else
     rep(1 / length(weights), length(weights))
 
-  # ============================================================
-  # 4. COMPUTE MEAN AND FILTER
-  # ============================================================
   counts$mean <- apply(
     counts[, reference_samples, drop = FALSE], 1,
     function(x) matrixStats::weightedMedian(x, w = sample_weights, na.rm = TRUE)
@@ -231,8 +219,6 @@ call_cnvs <- function(
 
   keep <- counts$mean >= 10 & is.finite(counts$mean) & counts[[sample_name]] >= 5
   counts <- counts[keep, , drop = FALSE]
-  # See the matching guard above -- the HMM engines require at least 2
-  # targets to step through safely.
   if (nrow(counts) < 2)
     stop("At least 2 valid targets are required after coverage filtering for ",
          sample_name, " (found ", nrow(counts), ")")
@@ -379,9 +365,6 @@ genotype_cnvs <- function(
     stringsAsFactors = FALSE
   )
 
-  # Phred scoring: engine = "new" keeps the numerical floor added on top of
-  # the original formula (see call_cnvs.R history); engine = "legacy_canoes"
-  # uses the literal, unguarded original formula (legacy_phred()) on purpose.
   phred <- if (engine == "legacy_canoes") {
     legacy_phred
   } else {
@@ -390,9 +373,7 @@ genotype_cnvs <- function(
       round(min(99, -10 * log10(max(1 - prob, 1e-10))))
     }
   }
-
-  # Constrained-likelihood dispatch: same c(modified, unmodified) return
-  # order from either engine, so the call sites below don't need to change.
+  
   get_lik <- function(forbidden_new, forbidden_legacy, start_target, end_target) {
     if (engine == "legacy_canoes") {
       legacy_modified_likelihood(

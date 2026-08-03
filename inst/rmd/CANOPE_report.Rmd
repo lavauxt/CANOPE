@@ -36,16 +36,8 @@ library(tidyr)
 library(htmltools)
 library(kableExtra)
 
-# Metadata columns that are never sample columns in CANOPE's `counts` table
 .canope_metadata_cols <- c("target", "chromosome", "start", "end", "gc", "GENE", "mean")
 
-# ---------------------------------------------------------------------------
-# Per-CNV plotting data, built the same way generate_plots.R does for the
-# static PDFs, so the interactive report and the PDF plots always agree.
-# Assumes the CANOPE package functions (targets_to_rows, parse_canope_targets,
-# format_chr_label, compute_exon_index, model_lookup, model_matrix_lookup)
-# are on the search path.
-# ---------------------------------------------------------------------------
 get_canope_plot_data <- function(call_row, counts, bed_file, models, refs, flank = 5, gene_gap = 1) {
 
   sample <- call_row$SAMPLE
@@ -181,9 +173,6 @@ if (!is.null(params$qc_metrics) && is.data.frame(params$qc_metrics) && nrow(para
   missing_chrs <- params$qc_metrics[params$qc_metrics$Type == "Missing Chromosome", ]
   if (nrow(missing_chrs) > 0) {
     for (i in seq_len(nrow(missing_chrs))) {
-      # Each cat() call must start at column 0: results='asis' output goes
-      # straight into the Markdown source, and Pandoc treats an indented
-      # line (4+ spaces) as a code block rather than raw HTML.
       cat('<div class="alert alert-warning" role="alert">\n')
       cat('<h4 class="alert-heading" style="margin-top:0;font-weight:bold;"><i class="fa fa-exclamation-triangle"></i> Pipeline Warning</h4>\n')
       cat(sprintf('<p style="margin-bottom:0;">%s. <strong>Analysis for this chromosome has been skipped automatically.</strong></p>\n',
@@ -405,12 +394,6 @@ if (length(samples) == 0) {
           next
         }
 
-        # Per-call diagnostic: flags when the fraction of non-called exons in
-        # this window that fall outside the modelled 95% interval is
-        # statistically higher than the ~5% expected under a well-calibrated
-        # interval. Informational only -- doesn't change the call, interval,
-        # or confidence score. See check_background_calibration() in
-        # canope_utils.R.
         if (isTRUE(plot_data$bg_calibration$flag)) {
           cat("\n> \u26a0\ufe0f **Background calibration flag:** ",
               round(plot_data$bg_calibration$pct_outside), "% of non-called exons in this window (",

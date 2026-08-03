@@ -30,7 +30,6 @@ export_canope_to_vcf <- function(cnv_calls, output_vcf, sample_name = NULL,
     }
   }
 
-  # ── Parse INTERVAL into Start/End if not already present ──────────────────
   if (!all(c("Start", "End") %in% colnames(cnv_calls))) {
     parsed <- lapply(cnv_calls$INTERVAL, parse_canope_interval)
     cnv_calls$Start <- vapply(parsed, function(p) p$start, integer(1))
@@ -128,12 +127,6 @@ export_canope_to_vcf <- function(cnv_calls, output_vcf, sample_name = NULL,
     if ("REF_SAMPLES" %in% colnames(representative)) {
       refs_val <- safe_char(representative$REF_SAMPLES, "")
       if (nzchar(refs_val)) {
-        # REF_SAMPLES is stored ';'-joined elsewhere in the pipeline (CSV
-        # output, HTML report). But INFO fields use ';' to separate distinct
-        # keys and ',' to separate multiple values *within* one Number=.
-        # field (per the VCF spec) -- embedding literal ';' here corrupted
-        # this record's INFO field for any downstream VCF parser. Convert
-        # to ','-joined just for this VCF value.
         refs_vcf <- gsub(";", ",", refs_val, fixed = TRUE)
         info_items <- c(info_items, paste0("REFS=", refs_vcf))
       }

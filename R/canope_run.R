@@ -151,7 +151,6 @@ run_canope <- function(
   coverage_backend <- match.arg(coverage_backend)
   megadepth_op <- match.arg(megadepth_op)
 
-  # ---- Derive output prefix if not given ----
   if (is.null(output_prefix)) {
     base <- basename(output_file)
     if (grepl("_CNVCall\\.csv$", base)) {
@@ -160,7 +159,6 @@ run_canope <- function(
       output_prefix <- tools::file_path_sans_ext(base)
     }
   }
-  # Ensure prefix starts with "CANOPE_"
   if (!grepl("^CANOPE_", output_prefix)) {
     output_prefix <- paste0("CANOPE_", output_prefix)
   }
@@ -168,7 +166,6 @@ run_canope <- function(
   out_dir <- dirname(output_file)
   if (out_dir == "") out_dir <- "."
 
-  # ---- Use prefix for all derived output paths ----
   if (is.null(log_file)) {
     log_file <- file.path(out_dir, paste0(output_prefix, "_pipeline.log"))
   }
@@ -185,7 +182,6 @@ run_canope <- function(
   log_msg("INFO", sprintf("Terminal-exon padding: %s bp | Plot gene-gap: %s",
                           pad_terminal_exons %||% 0, plot_gene_gap %||% 1))
 
-  # ── BED preprocessing (optional) ─────────────────────────────────────────
   if (!is.null(bed_file) && !identical(bed_process, "NO")) {
     processed_bed <- file.path(out_dir, paste0(output_prefix, "_processed.bed"))
     log_msg("INFO", sprintf("Running process_bed_file(mode = '%s') on %s", bed_process, bed_file))
@@ -225,7 +221,6 @@ run_canope <- function(
     colnames(canope.reads_un)[seq(n_expected_meta + 1L, ncol(canope.reads_un))] <- samples_to_analyse
 
   } else {
-    # ── Terminal-exon padding (optional; ported from ECHO) ─────────────────
     if (!is.null(pad_terminal_exons) && !is.na(pad_terminal_exons) && pad_terminal_exons > 0) {
       chr_lengths_for_padding <- NULL
       if (!is.null(fasta_file) && file.exists(fasta_file)) {
@@ -290,9 +285,7 @@ run_canope <- function(
       warning(sprintf("Column '%s' had %d non-numeric value(s) coerced to NA", col, sum(lost)), call. = FALSE)
     }
   }
-  # ====================================================
 
-  # ---- GC content --------------------------------------------
   if (!is.null(fasta_file) && !is.null(bed_file)) {
     log_msg("INFO", "Computing GC content from FASTA file")
     datagc <- compute_gc_from_fasta(fasta_file = fasta_file, bed_input = bed_file)
@@ -334,7 +327,6 @@ run_canope <- function(
     canope.reads_un[, !(colnames(canope.reads_un) %in% c("GENE", "target", "gc"))]
   )
 
-  # ---- optional reference BAM panel --------------------------
   refsample_names <- character(0)
   if (!is.null(refbams_file) && file.exists(refbams_file)) {
     if (is.null(ref_reads) || !file.exists(ref_reads))
@@ -349,10 +341,6 @@ run_canope <- function(
     refbams         <- apply(rawrefbams, 1, toString)
     refsample_names <- tools::file_path_sans_ext(basename(refbams))
 
-    # Same 4-metadata-column convention as 'reads_file' (chromosome, start,
-    # end, GENE) -- previously this dropped only the first 3 columns, which
-    # silently kept GENE as if it were the first reference sample's read
-    # counts whenever ref_reads used the same layout as reads_file.
     data_ref <- utils::read.table(ref_reads, header = TRUE, check.names = FALSE,
                                   stringsAsFactors = FALSE)
     n_ref_meta <- 4L
@@ -375,7 +363,6 @@ run_canope <- function(
 
   canope.reads <- canope.reads_un[, c("target", "gc", "GENE", "chromosome", "start", "end", target_samples)]
 
-  # ===== SAFETY: ensure all sample columns are numeric (again) =====
   for (nm in target_samples) {
     raw_vals <- canope.reads[[nm]]
     canope.reads[[nm]] <- as.numeric(as.character(raw_vals))
@@ -384,7 +371,6 @@ run_canope <- function(
       warning(sprintf("Column '%s' had %d non-numeric value(s) coerced to NA", nm, sum(lost)), call. = FALSE)
     }
   }
-  # ================================================================
 
   has_chr_prefix <- any(grepl("^chr", as.character(canope.reads$chromosome)))
   chrX_label <- if (has_chr_prefix) "chrX" else "X"
@@ -516,7 +502,6 @@ run_canope <- function(
   final_cnvs <- if (length(all_cnvs) > 0) do.call(rbind, all_cnvs) else data.frame()
   rownames(final_cnvs) <- NULL
 
-  # ── CNV confidence scoring ───────────────────────────────────────────────
   if (score_confidence && nrow(final_cnvs) > 0) {
     log_msg("INFO", "Scoring CNV confidence")
     final_cnvs <- do.call(score_canope_confidence, c(list(cnv_calls = final_cnvs), confidence_args))
@@ -555,7 +540,6 @@ run_canope <- function(
     }
   }
 
-  # ── QC metrics ───────────────────────────────────────────────────────────
   qc_metrics_path <- NULL
   if (run_qc_metrics) {
     if (is.null(qc_output_file)) {
@@ -574,7 +558,6 @@ run_canope <- function(
     }, error = function(e) log_msg("WARNING", "QC metrics step failed: ", conditionMessage(e)))
   }
 
-  # ── PCA of coverage profiles ─────────────────────────────────────────────
   if (pca_plot && length(target_samples) >= 3) {
     if (is.null(pca_output_file)) {
       pca_output_file <- file.path(out_dir, paste0(output_prefix, "_PCA.pdf"))
@@ -592,7 +575,6 @@ run_canope <- function(
     )
   }
 
-  # ── VCF export ───────────────────────────────────────────────────────────
   if (export_vcf && nrow(final_cnvs) > 0) {
     if (is.null(vcf_output)) {
       vcf_output <- file.path(out_dir, paste0(output_prefix, "_calls.vcf"))
@@ -611,10 +593,8 @@ run_canope <- function(
     }
   }
 
-  # ── Interactive HTML report ──────────────────────────────────────────────
   if (report && nrow(final_cnvs) > 0) {
     if (is.null(report_output_dir)) report_output_dir <- out_dir
-    # Strip leading "CANOPE_" to avoid duplication (report will add it)
     report_prefix <- sub("^CANOPE_", "", output_prefix)
     log_msg("INFO", "Rendering interactive HTML report")
     tryCatch(

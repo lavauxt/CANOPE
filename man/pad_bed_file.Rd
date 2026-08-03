@@ -31,17 +31,6 @@ one, every row is treated as its own single-exon "gene").}
 Invisibly returns \code{output_bed}.
 }
 \description{
-CANOPE's coverage/GC-content functions (\code{\link{get_coverage_from_bams}},
-\code{\link{get_coverage_from_bams_megadepth}}, \code{\link{compute_gc_from_fasta}},
-\code{\link{compute_gc_from_bed}}) all take a BED \emph{path}, re-reading it
-from disk independently -- unlike ECHO, where a single in-memory
-\code{bed_file} is padded once and reused for everything. This wrapper
-reads a BED file, applies \code{\link{pad_gene_terminal_exons}}, and
-writes the result back out to \code{output_bed} in the same column
-layout as the input, so \code{run_canope()} can point every downstream
-consumer at one consistently-padded file.
-}
-\details{
 Internally converts the (0-based, half-open) BED coordinates to 1-based
 inclusive before padding, and back to 0-based on write-out, so the
 padding math is identical to ECHO's (which operates on 1-based BED

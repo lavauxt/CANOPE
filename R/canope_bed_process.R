@@ -79,7 +79,6 @@ process_bed_file <- function(input_bed, output_bed, bed_process = "STANDARD",
     g_clean <- gsub("\\s*\\(.*?\\)", "", as.character(name_vec))
     g_clean <- sub("^([^,]+),.*$", "\\1", g_clean)
 
-    # Exon-number extraction.
     exon_pattern <- "(?<![A-Za-z0-9])ex(?:on)?[_-]?([0-9]+)"
     exon_all <- gregexpr(exon_pattern, g_clean, perl = TRUE)
     exon_numbers <- vapply(seq_along(g_clean), function(i) {
@@ -213,12 +212,6 @@ process_bed_file <- function(input_bed, output_bed, bed_process = "STANDARD",
     ref_parsed <- parse_bed_name(ref_df$Gene, exon_sep, gene_field_index, gene_name_keep, auto_exon_number, gene_name_collapse)
     ref_df$Gene <- ref_parsed$gene
 
-    # Prefer NM_ (RefSeq mRNA) transcripts when available, but per gene --
-    # applying this globally would drop every gene whose *only* transcripts
-    # are non-coding (NR_) or predicted (XM_) as soon as ANY other gene in
-    # the exon superset had an NM_ transcript, which is true for almost any
-    # real panel/genome-wide TxDb and would silently delete those genes'
-    # annotations entirely.
     is_nm <- grepl("^NM_", ref_df$Transcript)
     gene_has_nm <- stats::ave(is_nm, ref_df$Gene, FUN = any)
     ref_df <- ref_df[is_nm | !gene_has_nm, ]
@@ -370,10 +363,7 @@ process_bed_file <- function(input_bed, output_bed, bed_process = "STANDARD",
       Chr = input_df$Chr, Start = input_df$Start, End = input_df$End,
       Gene = input_df$Gene, ExonNum = input_df$ExonNum, stringsAsFactors = FALSE
     )
-    # No exon-numbering step happens in this mode, but a filler/off-target
-    # region's name can still leak into the GENE column shown downstream
-    # (plots, VCF, confidence scoring) if left alone -- so this still runs
-    # here even though assign_exon_numbers_per_gene() never does.
+
     df <- handle_off_target_regions(df, pattern = off_target_pattern, handling = off_target_handling)
     df$Custom.Exon <- df$ExonNum
   } else {

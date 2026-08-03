@@ -51,10 +51,7 @@ generate_canope_report <- function(rdata_output,
                                    log_file = NULL,
                                    prefix = "CANOPE",
                                    template_path = NULL) {
-  # Captured immediately, before anything else in this function could change
-  # it, so relative paths the *caller* built (log_file, qc_metrics_file,
-  # sample_table, rdata_output itself) keep meaning what the caller meant by
-  # them — see the knit_root_dir note below.
+
   caller_wd <- getwd()
 
   if (!requireNamespace("rmarkdown", quietly = TRUE))

@@ -47,17 +47,5 @@ The same data.frame: column set and row order preserved for
   \code{"na"}/\code{"merge"}; row count reduced for \code{"remove"}.
 }
 \description{
-Ported from ECHO. Some target panels include intervals that were never a
-real gene exon at all: normalization/backbone probes placed off-target
-for coverage calibration, commonly named things like \code{"HorsROI"}
-("hors ROI" is French for "outside the region of interest"),
-\code{"OffTarget"}, \code{"Backbone"}, and so on. Left alone, the BED-name
-parser extracts whatever the first token of that name happens to be
-(e.g. \code{"HorsROI"}) as if it were a gene symbol, and
-\code{\link{assign_exon_numbers_per_gene}} then numbers it 1..n exactly
-like a real gene with its own exons -- so a plot window that happens to
-straddle one of these intervals shows it interleaved with the real
-gene's exons under its own (fake) "gene" tile. This function catches
-those rows, by name, \strong{before} any numbering happens, and lets the
-caller choose what should happen to them.
+Reclassify off-target / filler BED intervals before exon numbering
 }

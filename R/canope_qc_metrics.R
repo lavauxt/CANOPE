@@ -25,20 +25,15 @@ run_canope_qc_metrics <- function(counts,
                                    max_exon_cv      = 0.5) {
   message("[INFO] BEGIN CANOPE QC Metrics")
 
-  # ── Resolve gene column ────────────────────────────────────────────────────
   gene_col  <- intersect(c("GENE", "gene", "Gene"), names(bed_df))[1]
   chrom_col <- intersect(c("chromosome", "Chr", "CHROM"), names(bed_df))[1]
   if (is.na(gene_col))  gene_col  <- names(bed_df)[4]
   if (is.na(chrom_col)) chrom_col <- names(bed_df)[1]
 
-  # NOTE: use local variables here rather than attaching `._gene`/`._chrom`
-  # columns onto bed_df — assign_exon_numbers_per_gene() uses those exact
-  # names internally as temporary column names, and passing them in
-  # pre-existing would collide with (and silently shadow) its own renaming.
+
   gene_vals  <- bed_df[[gene_col]]
   chrom_vals <- bed_df[[chrom_col]]
 
-  # Exon numbering within each gene for labels
   bed_numbered  <- assign_exon_numbers_per_gene(bed_df)
   exon_in_gene  <- bed_numbered$exon_number
 
@@ -46,7 +41,6 @@ run_canope_qc_metrics <- function(counts,
   sample_median <- sapply(dt_counts, stats::median, na.rm = TRUE)
   total_reads   <- colSums(dt_counts, na.rm = TRUE)
 
-  # ── Cross-sample correlation ───────────────────────────────────────────────
   if (length(sample_names) < 2) {
     max_corr <- setNames(rep(NA_real_, length(sample_names)), sample_names)
     message("[WARNING] Correlation QC skipped: fewer than 2 samples.")
@@ -60,7 +54,6 @@ run_canope_qc_metrics <- function(counts,
     names(max_corr) <- colnames(corr_matrix)
   }
 
-  # ── Build metrics list ─────────────────────────────────────────────────────
   m <- list(Sample  = character(), Exon    = character(),
             Type    = character(), Details = character(),
             Gene    = character())
@@ -73,7 +66,6 @@ run_canope_qc_metrics <- function(counts,
     m$Gene    <<- c(m$Gene,    genes)
   }
 
-  # Low correlation
   low_corr <- which(!is.na(max_corr) & max_corr < min_corr)
   if (length(low_corr))
     add_metric(sample_names[low_corr], rep("All", length(low_corr)),
@@ -81,7 +73,6 @@ run_canope_qc_metrics <- function(counts,
                paste("Low correlation:", round(max_corr[low_corr], 3)),
                rep("All", length(low_corr)))
 
-  # Low median depth
   low_med <- which(sample_median < min_cov)
   if (length(low_med))
     add_metric(sample_names[low_med], rep("All", length(low_med)),
@@ -89,7 +80,6 @@ run_canope_qc_metrics <- function(counts,
                paste("Low median depth:", round(sample_median[low_med], 1)),
                rep("All", length(low_med)))
 
-  # Low total reads
   low_reads <- which(total_reads < min_total_reads)
   if (length(low_reads))
     add_metric(sample_names[low_reads], rep("All", length(low_reads)),
@@ -97,7 +87,6 @@ run_canope_qc_metrics <- function(counts,
                paste("Low total reads:", format(total_reads[low_reads], big.mark = ",")),
                rep("All", length(low_reads)))
 
-  # Per-exon low median depth
   exon_median <- apply(dt_counts, 1, stats::median, na.rm = TRUE)
   fail_exon   <- which(exon_median < min_cov)
   if (length(fail_exon)) {
@@ -108,7 +97,6 @@ run_canope_qc_metrics <- function(counts,
                gene_vals[fail_exon])
   }
 
-  # Per-exon high CV
   if (requireNamespace("matrixStats", quietly = TRUE)) {
     exon_sd  <- matrixStats::rowSds(as.matrix(dt_counts), na.rm = TRUE)
     exon_mean <- rowMeans(dt_counts, na.rm = TRUE)
@@ -126,7 +114,6 @@ run_canope_qc_metrics <- function(counts,
                gene_vals[high_cv])
   }
 
-  # Missing sex chromosomes
   has_chrX <- any(grepl("^(chr)?X$", chrom_vals, ignore.case = TRUE))
   has_chrY <- any(grepl("^(chr)?Y$", chrom_vals, ignore.case = TRUE))
   if (!has_chrX) {

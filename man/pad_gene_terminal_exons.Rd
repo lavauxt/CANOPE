@@ -31,7 +31,7 @@ The same data.frame (original row order and row count
   preserved), with Start/End adjusted for terminal-exon rows only.
 }
 \description{
-Ported from ECHO. Capture-based coverage often drops off right at the
+Capture-based coverage often drops off right at the
 true edge of a target interval (probe/bait tiling is rarely perfect
 exactly at the boundary, and reads whose alignment barely spans the edge
 get soft-clipped or excluded). For an internal exon this is usually
