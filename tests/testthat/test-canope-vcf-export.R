@@ -56,7 +56,7 @@ test_that("REF_SAMPLES is comma-separated in the VCF INFO field, not semicolon-s
   info_fields <- vapply(lines[!startsWith(lines, "#")], function(l) strsplit(l, "\t")[[1]][8], character(1))
   refs_tokens <- regmatches(info_fields, regexpr("REFS=[^;]*", info_fields))
 
-  expect_equal(refs_tokens, c("REFS=S2,S3", "REFS=S1,S3"))
+  expect_equal(unname(refs_tokens), c("REFS=S2,S3", "REFS=S1,S3"))
 })
 
 test_that("export_canope_to_vcf filters to a single sample when sample_name is given", {

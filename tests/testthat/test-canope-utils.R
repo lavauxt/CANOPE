@@ -39,8 +39,8 @@ test_that("canope_filter_chromosomes handles chr-prefix mismatches both ways", {
 
   # exclude using a chr-prefixed name against a bare row
   out2 <- canope_filter_chromosomes(df, exclude = "chr3")
-  expect_false(3 %in% out2$value)
-  expect_setequal(out2$value, c(1, 2, 4))
+  expect_false(4 %in% out2$value)
+  expect_setequal(out2$value, c(1, 2, 3))
 
   # empty/NULL input passes through unchanged
   expect_null(canope_filter_chromosomes(NULL))

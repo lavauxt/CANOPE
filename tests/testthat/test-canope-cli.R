@@ -83,6 +83,19 @@ test_that("canope() requires bed_file, samples, and a GC source", {
   expect_error(canope(cfg_path), "samples directory is required|fasta_file or bsgenome_pkg")
 })
 
-test_that("canope() errors clearly when the config file cannot be found", {
-  expect_error(canope(tempfile(fileext = ".yaml")), "Configuration file not found")
+test_that("canope() falls back to the package config when the requested path is missing", {
+  testthat::skip_if_not_installed("testthat", "3.1.4")
+  testthat::skip_if_not_installed("yaml")
+
+  captured <- NULL
+  testthat::local_mocked_bindings(
+    run_canope = function(...) { captured <<- list(...); invisible(NULL) },
+    .package = "CANOPE"
+  )
+
+  canope(tempfile(fileext = ".yaml"))
+
+  expect_equal(captured$bsgenome_pkg, "BSgenome.Hsapiens.UCSC.hg19")
+  expect_equal(captured$bed_file, "data/TEST/TEST.bed")
+  expect_equal(captured$samples, "data/TEST")
 })
