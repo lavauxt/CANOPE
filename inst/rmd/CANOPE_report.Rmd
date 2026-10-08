@@ -21,6 +21,8 @@ params:
 ---
 
 ```{r setup, include=FALSE}
+`%||%` <- function(x, y) if (!is.null(x)) x else y
+
 knitr::opts_chunk$set(
   echo = FALSE,
   warning = FALSE,

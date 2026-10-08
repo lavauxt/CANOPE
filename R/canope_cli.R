@@ -53,7 +53,6 @@ canope <- function(config_path = "config.yaml", ...) {
     settings <- cfg
   }
 
-------------------------------------------------------------------------
   args <- list()
 
   args$fasta_file <- input$fasta %||% cfg$fasta_file
@@ -132,8 +131,3 @@ canope <- function(config_path = "config.yaml", ...) {
   message("[INFO] CANOPE pipeline starting with config: ", config_file)
   do.call(run_canope, args)
 }
-
-
-#' Null-coalescing operator for use inside canope()
-#' @noRd
-`%||%` <- function(x, y) if (!is.null(x)) x else y

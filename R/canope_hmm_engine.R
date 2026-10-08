@@ -286,10 +286,6 @@ decode_hmm_states <- function(
 }
 
 
-#' @noRd
-`%||%` <- function(x, y) if (is.null(x)) y else x
-
-
 #' @export
 emission_probs <- function(test_counts, target_means, var_estimate, targets) {
   n <- length(test_counts)

@@ -311,9 +311,9 @@ run_canope <- function(
       stop("[ERROR] Could not identify a GC content column in 'datagc'.")
     }
   }
-  gc <- as.numeric(datagc$GC_CONTENT)
+  gc <- .align_gc_to_targets(datagc, canope.reads_un)
 
-  if (max(gc, na.rm = TRUE) > 1) {
+  if (any(gc > 1, na.rm = TRUE)) {
     log_msg("INFO", "GC content appears to be on a 0-100 scale; converting to fraction.")
     gc <- gc / 100
   }
@@ -405,7 +405,8 @@ run_canope <- function(
   count_matrix <- as.matrix(canope.reads[, target_samples, drop = FALSE])
   storage.mode(count_matrix) <- "numeric"
 
-  keep_gc      <- canope.reads$gc >= gc_extreme_filter[1] & canope.reads$gc <= gc_extreme_filter[2]
+  keep_gc      <- !is.na(canope.reads$gc) &
+    canope.reads$gc >= gc_extreme_filter[1] & canope.reads$gc <= gc_extreme_filter[2]
   canope.reads <- canope.reads[keep_gc, , drop = FALSE]
   count_matrix <- count_matrix[keep_gc, , drop = FALSE]
 

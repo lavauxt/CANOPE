@@ -171,16 +171,7 @@ compute_gc_from_bed <- function(bsgenome_pkg, bed_input) {
   if (!is.character(bsgenome_pkg) || length(bsgenome_pkg) != 1) {
     stop("[ERROR] 'bsgenome_pkg' must be a single character string.")
   }
-  
-  if (!requireNamespace(bsgenome_pkg, quietly = TRUE)) {
-    stop(sprintf(
-      "[ERROR] The package '%s' is not installed. Please install it via BiocManager::install('%s').", 
-      bsgenome_pkg, bsgenome_pkg
-    ))
-  }
-  
-  genome_obj <- getExportedValue(bsgenome_pkg, bsgenome_pkg)
-  
+
   if (is.character(bed_input) && length(bed_input) == 1 && file.exists(bed_input)) {
     bed_df <- utils::read.table(bed_input, header = FALSE, stringsAsFactors = FALSE)
   } else if (is.data.frame(bed_input)) {
@@ -192,6 +183,22 @@ compute_gc_from_bed <- function(bsgenome_pkg, bed_input) {
   if (all(c("V1", "V2", "V3") %in% colnames(bed_df))) {
     colnames(bed_df)[1:3] <- c("chromosome", "start", "end")
   }
+
+  required_cols <- c("chromosome", "start", "end")
+  missing_cols <- setdiff(required_cols, colnames(bed_df))
+  if (length(missing_cols) > 0) {
+    stop("[ERROR] BED input is missing required column(s): ",
+         paste(missing_cols, collapse = ", "), ".")
+  }
+
+  if (!requireNamespace(bsgenome_pkg, quietly = TRUE)) {
+    stop(sprintf(
+      "[ERROR] The package '%s' is not installed. Please install it via BiocManager::install('%s').",
+      bsgenome_pkg, bsgenome_pkg
+    ))
+  }
+
+  genome_obj <- getExportedValue(bsgenome_pkg, bsgenome_pkg)
 
   if (requireNamespace("gtools", quietly = TRUE)) {
     bed_df <- bed_df[gtools::mixedorder(bed_df$chromosome), ]
@@ -318,6 +325,36 @@ compute_gc_from_bed <- function(bsgenome_pkg, bed_input) {
     GC_CONTENT = as.numeric(gc_freq),
     stringsAsFactors = FALSE
   )
+}
+
+
+# Align a GC table to the target rows without relying on row order.
+# Coordinates are the shared identity between the GC source and count table.
+.align_gc_to_targets <- function(gc_data, targets) {
+  gc <- as.numeric(gc_data$GC_CONTENT)
+  coord_cols <- c("chromosome", "start", "end")
+
+  if (all(coord_cols %in% names(gc_data)) && all(coord_cols %in% names(targets))) {
+    make_key <- function(data) {
+      chromosome <- format_chr_label(data$chromosome)
+      start <- as.character(data$start)
+      end <- as.character(data$end)
+      paste0(nchar(chromosome), "#", chromosome, "#", start, "#", end)
+    }
+
+    matched <- match(make_key(targets), make_key(gc_data))
+    gc <- gc[matched]
+  } else if (length(gc) != nrow(targets)) {
+    stop("[ERROR] GC data has ", length(gc), " value(s) for ", nrow(targets),
+         " target(s), and coordinate columns are unavailable for alignment.")
+  }
+
+  missing <- sum(is.na(gc))
+  if (missing > 0) {
+    warning("GC content is missing for ", missing,
+            " target(s) after coordinate alignment.", call. = FALSE)
+  }
+  gc
 }
 
 #' Get Read Coverage from BAM files
