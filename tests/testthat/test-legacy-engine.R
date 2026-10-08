@@ -26,14 +26,13 @@ test_that("legacy_transition_logprobs rows are proper probability distributions"
   }
 })
 
-test_that("legacy_phred matches the original (unguarded) formula, including its documented NaN edge case", {
+test_that("legacy_phred matches the original formula and preserves its NaN edge case", {
   expect_equal(legacy_phred(0), 0)
   expect_equal(legacy_phred(0.99), 20)
   expect_equal(legacy_phred(1), 99)
-  # Deliberately unguarded: prob slightly > 1 makes 1 - prob negative, and
-  # log10() of a negative number is NaN in R -- this is documented, expected
-  # behaviour for this engine, not a bug.
-  expect_true(is.nan(legacy_phred(1 + 1e-6)))
+  phred_over_one <- NA_real_
+  expect_silent(phred_over_one <- legacy_phred(1 + 1e-6))
+  expect_true(is.nan(phred_over_one))
 })
 
 make_synthetic_legacy_case <- function() {

@@ -152,7 +152,7 @@ compute_gc_from_fasta <- function(fasta_file, bed_input) {
 
   data.frame(
     chromosome = bed_df$chromosome,
-    start      = bed_df$start,
+    start      = as.numeric(bed_df$start) + 1,
     end        = bed_df$end,
     GENE       = gene_names,
     GC_CONTENT = as.numeric(gc_vals),
@@ -336,14 +336,35 @@ compute_gc_from_bed <- function(bsgenome_pkg, bed_input) {
 
   if (all(coord_cols %in% names(gc_data)) && all(coord_cols %in% names(targets))) {
     make_key <- function(data) {
-      chromosome <- format_chr_label(data$chromosome)
-      start <- as.character(data$start)
-      end <- as.character(data$end)
+      raw_chromosome <- as.character(data$chromosome)
+      if (anyNA(raw_chromosome) || any(!nzchar(raw_chromosome))) {
+        stop("[ERROR] GC alignment requires non-missing chromosome, start, and end coordinates.")
+      }
+      chromosome <- format_chr_label(raw_chromosome)
+      start <- suppressWarnings(as.numeric(data$start))
+      end <- suppressWarnings(as.numeric(data$end))
+      if (anyNA(chromosome) || anyNA(start) || anyNA(end) ||
+          any(!is.finite(start)) || any(!is.finite(end))) {
+        stop("[ERROR] GC alignment requires non-missing chromosome, start, and end coordinates.")
+      }
+      start <- as.character(start)
+      end <- as.character(end)
       paste0(nchar(chromosome), "#", chromosome, "#", start, "#", end)
     }
 
-    matched <- match(make_key(targets), make_key(gc_data))
-    gc <- gc[matched]
+    gc_keys <- make_key(gc_data)
+    target_keys <- make_key(targets)
+    unique_gc_keys <- unique(gc_keys)
+    gc_by_key <- vapply(unique_gc_keys, function(key) {
+      values <- unique(gc[gc_keys == key & !is.na(gc)])
+      if (length(values) > 1L) {
+        stop("[ERROR] GC data contains conflicting values for duplicate coordinates.")
+      }
+      if (length(values) == 0L) NA_real_ else values[[1L]]
+    }, numeric(1))
+
+    matched <- match(target_keys, unique_gc_keys)
+    gc <- unname(gc_by_key[matched])
   } else if (length(gc) != nrow(targets)) {
     stop("[ERROR] GC data has ", length(gc), " value(s) for ", nrow(targets),
          " target(s), and coordinate columns are unavailable for alignment.")

@@ -279,5 +279,5 @@ legacy_modified_likelihood <- function(
 #'   \code{1 - prob} to zero or negative.
 #' @export
 legacy_phred <- function(prob) {
-  round(min(99, -10 * log10(1 - prob)))
+  suppressWarnings(round(min(99, -10 * log10(1 - prob))))
 }
