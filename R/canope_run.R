@@ -1,3 +1,32 @@
+.align_reference_counts <- function(target_data, reference_data) {
+  coordinate_cols <- c("chromosome", "start", "end")
+  missing_target <- setdiff(coordinate_cols, names(target_data))
+  missing_reference <- setdiff(coordinate_cols, names(reference_data))
+  if (length(missing_target) || length(missing_reference)) {
+    stop("Both target and reference count tables must contain chromosome, start, and end columns.",
+         call. = FALSE)
+  }
+
+  make_keys <- function(data) {
+    chromosome <- as.character(data$chromosome)
+    start <- suppressWarnings(as.numeric(as.character(data$start)))
+    end <- suppressWarnings(as.numeric(as.character(data$end)))
+    if (anyNA(chromosome) || anyNA(start) || anyNA(end))
+      stop("Target coordinates must be non-missing and numeric where applicable.", call. = FALSE)
+    paste(chromosome, start, end, sep = "\r")
+  }
+
+  target_keys <- make_keys(target_data)
+  reference_keys <- make_keys(reference_data)
+  if (anyDuplicated(target_keys) || anyDuplicated(reference_keys))
+    stop("Duplicate chromosome/start/end coordinates prevent unambiguous reference alignment.",
+         call. = FALSE)
+  if (length(target_keys) != length(reference_keys) || !setequal(target_keys, reference_keys))
+    stop("Target and reference count tables contain different genomic coordinates.", call. = FALSE)
+
+  reference_data[match(target_keys, reference_keys), , drop = FALSE]
+}
+
 #' Run the CANOPE Copy Number Calling Pipeline
 #'
 #' End-to-end wrapper: reads count/GC data, QC-filters samples and exons,
@@ -355,7 +384,11 @@ run_canope <- function(
         "[ERROR] %d reference sample(s) from refbams_file not found as columns in ref_reads: %s",
         length(missing_refs), paste(missing_refs, collapse = ", ")))
 
-    canope.reads_un <- cbind(canope.reads_un, canope.reads_ref[, refsample_names, drop = FALSE])
+    data_ref <- .align_reference_counts(canope.reads_un, data_ref)
+    canope.reads_un <- cbind(
+      canope.reads_un,
+      data_ref[, refsample_names, drop = FALSE]
+    )
   }
 
   target_samples <- if (length(refsample_names) > 0)

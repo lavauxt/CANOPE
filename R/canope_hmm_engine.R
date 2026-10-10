@@ -26,7 +26,17 @@ hmm_params <- function(
   span_bp <- as.numeric(span_bp)
   prior_abnormal <- as.numeric(prior_abnormal)
 
-  stopifnot(p > 0, expected_targets > 0, span_bp > 0, prior_abnormal > 0)
+  if (length(p) != 1L || !is.finite(p) || p <= 0 || p >= 0.5)
+    stop("p must be a single finite value strictly between 0 and 0.5.", call. = FALSE)
+  if (length(expected_targets) != 1L || !is.finite(expected_targets) || expected_targets < 1)
+    stop("expected_targets must be a single finite value of at least 1.", call. = FALSE)
+  if (length(span_bp) != 1L || is.na(span_bp) || span_bp <= 0)
+    stop("span_bp must be a single positive value (Inf is allowed).", call. = FALSE)
+  if (length(prior_abnormal) != 1L || !is.finite(prior_abnormal) ||
+      prior_abnormal <= 0 || prior_abnormal >= 1)
+    stop("prior_abnormal must be a single finite value strictly between 0 and 1.", call. = FALSE)
+  if (p + 1 / expected_targets > 1)
+    stop("p + 1 / expected_targets must not exceed 1.", call. = FALSE)
   structure(
     list(
       p = p,

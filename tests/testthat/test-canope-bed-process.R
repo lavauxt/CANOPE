@@ -36,6 +36,27 @@ test_that("process_bed_file NO mode extracts gene/exon from the name column and 
   expect_equal(out$V5, c(1L, 2L, 1L))
 })
 
+test_that("process_bed_file keeps NA-handled off-target intervals", {
+  input_bed <- tempfile(fileext = ".bed")
+  output_bed <- tempfile(fileext = ".bed")
+  on.exit(unlink(c(input_bed, output_bed)))
+
+  writeLines(c(
+    "chr1\t100\t200\tGENE1_ex1",
+    "chr1\t200\t300\tHorsROI_1",
+    "chr1\t300\t400\tGENE2_ex1"
+  ), input_bed)
+
+  process_bed_file(input_bed, output_bed, bed_process = "NO", exon_sep = "_")
+  out <- read.table(output_bed, sep = "\t", header = FALSE, stringsAsFactors = FALSE,
+                    na.strings = "NA")
+
+  expect_equal(nrow(out), 3L)
+  expect_equal(out$V4[c(1, 3)], c("GENE1", "GENE2"))
+  expect_true(is.na(out$V4[2]))
+  expect_true(is.na(out$V5[2]))
+})
+
 test_that("the REGEN per-gene NM_-preference logic keeps genes whose only transcripts are non-coding", {
   # Isolated reproduction of the fix: previously
   # `if (any(grepl("^NM_", ref_df$Transcript))) ref_df <- ref_df[grepl(...), ]`

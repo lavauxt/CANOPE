@@ -151,6 +151,16 @@ process_bed_file <- function(input_bed, output_bed, bed_process = "STANDARD",
     list(q = df_hits$q, s = df_hits$s)
   }
 
+  handle_off_targets <- function(df) {
+    gene_col <- intersect(c("GENE", "gene", "Gene"), names(df))[1]
+    if (off_target_handling == "na" && !is.null(off_target_pattern) &&
+        !is.na(gene_col) && nzchar(off_target_pattern)) {
+      genes <- as.character(df[[gene_col]])
+      df$.keep_off_target <- !is.na(genes) & grepl(off_target_pattern, genes, perl = TRUE)
+    }
+    handle_off_target_regions(df, pattern = off_target_pattern, handling = off_target_handling)
+  }
+
   input_df <- utils::read.table(input_bed, sep = "\t", header = FALSE, stringsAsFactors = FALSE)
   if (ncol(input_df) < 3) stop("Input BED must have at least 3 columns.")
   colnames(input_df)[1:3] <- c("Chr", "Start", "End")
@@ -250,7 +260,7 @@ process_bed_file <- function(input_bed, output_bed, bed_process = "STANDARD",
     names(df)[names(df) == "Start"] <- "start"
     names(df)[names(df) == "End"] <- "end"
     names(df)[names(df) == "Gene"] <- "gene"
-    df <- handle_off_target_regions(df, pattern = off_target_pattern, handling = off_target_handling)
+    df <- handle_off_targets(df)
     df <- assign_exon_numbers_per_gene(df)
     names(df)[names(df) == "chromosome"] <- "Chr"
     names(df)[names(df) == "start"] <- "Start"
@@ -311,7 +321,7 @@ process_bed_file <- function(input_bed, output_bed, bed_process = "STANDARD",
         names(df)[names(df) == "Start"] <- "start"
         names(df)[names(df) == "End"] <- "end"
         names(df)[names(df) == "Gene"] <- "gene"
-        df <- handle_off_target_regions(df, pattern = off_target_pattern, handling = off_target_handling)
+        df <- handle_off_targets(df)
         df <- assign_exon_numbers_per_gene(df)
         names(df)[names(df) == "chromosome"] <- "Chr"
         names(df)[names(df) == "start"] <- "Start"
@@ -329,7 +339,7 @@ process_bed_file <- function(input_bed, output_bed, bed_process = "STANDARD",
         names(df)[names(df) == "Start"] <- "start"
         names(df)[names(df) == "End"] <- "end"
         names(df)[names(df) == "Gene"] <- "gene"
-        df <- handle_off_target_regions(df, pattern = off_target_pattern, handling = off_target_handling)
+        df <- handle_off_targets(df)
         df <- assign_exon_numbers_per_gene(df)
         names(df)[names(df) == "chromosome"] <- "Chr"
         names(df)[names(df) == "start"] <- "Start"
@@ -348,7 +358,7 @@ process_bed_file <- function(input_bed, output_bed, bed_process = "STANDARD",
       names(df)[names(df) == "Start"] <- "start"
       names(df)[names(df) == "End"] <- "end"
       names(df)[names(df) == "Gene"] <- "gene"
-      df <- handle_off_target_regions(df, pattern = off_target_pattern, handling = off_target_handling)
+      df <- handle_off_targets(df)
       df <- assign_exon_numbers_per_gene(df)
       names(df)[names(df) == "chromosome"] <- "Chr"
       names(df)[names(df) == "start"] <- "Start"
@@ -364,7 +374,7 @@ process_bed_file <- function(input_bed, output_bed, bed_process = "STANDARD",
       Gene = input_df$Gene, ExonNum = input_df$ExonNum, stringsAsFactors = FALSE
     )
 
-    df <- handle_off_target_regions(df, pattern = off_target_pattern, handling = off_target_handling)
+    df <- handle_off_targets(df)
     df$Custom.Exon <- df$ExonNum
   } else {
     stop("bed_process must be 'STANDARD', 'REGEN', or 'NO'")
@@ -372,11 +382,20 @@ process_bed_file <- function(input_bed, output_bed, bed_process = "STANDARD",
 
   df$Gene <- as.character(df$Gene)
   df$Gene <- vapply(strsplit(df$Gene, ",", fixed = TRUE), function(x) x[1], character(1))
+  keep_off_target <- if (".keep_off_target" %in% names(df)) df$.keep_off_target else rep(FALSE, nrow(df))
   if (!unknown_gene) {
-    df <- df[!is.na(df$Gene) & df$Gene != "" & df$Gene != ".", ]
+    keep_gene <- !is.na(df$Gene) & df$Gene != "" & df$Gene != "."
+    df <- df[keep_gene | keep_off_target, , drop = FALSE]
   } else {
-    df$Gene[is.na(df$Gene) | df$Gene == ""] <- "Unknown"
+    missing_gene <- is.na(df$Gene) | df$Gene == ""
+    df$Gene[missing_gene & !keep_off_target] <- "Unknown"
   }
+  if (any(keep_off_target)) {
+    for (exon_col in intersect(c("ExonNum", "Custom.Exon"), names(df))) {
+      df[[exon_col]][keep_off_target] <- NA
+    }
+  }
+  df$.keep_off_target <- NULL
   df <- unique(df)
 
   chrom_base <- c(as.character(1:22), "X", "Y", "M")

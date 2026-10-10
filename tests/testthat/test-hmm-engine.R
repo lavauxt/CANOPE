@@ -1,8 +1,7 @@
 # Tests for hmm_engine.R.
 #
-# hmm_engine.R implements the core HMM math and is intentionally left
-# unmodified in this review pass (per earlier direction on this file) -- these
-# tests exercise its documented behaviour and well-known HMM identities
+# hmm_engine.R implements the core HMM math; these tests exercise its
+# documented behaviour and well-known HMM identities
 # (transition rows are proper probability distributions; forward-backward
 # marginal likelihood is position-invariant; constrained likelihood can only
 # be <= the unconstrained baseline) rather than hard-coded reference numbers,
@@ -17,6 +16,10 @@ test_that("hmm_params validates its inputs and computes q correctly", {
   expect_error(hmm_params(-0.01, 6, 1e5))
   expect_error(hmm_params(0.01, 0, 1e5))
   expect_error(hmm_params(0.01, 6, -1))
+  expect_error(hmm_params(0.5, 6, 1e5), "between 0 and 0.5")
+  expect_error(hmm_params(0.01, 0.5, 1e5), "at least 1")
+  expect_error(hmm_params(0.4, 1, 1e5), "must not exceed 1")
+  expect_error(hmm_params(0.01, 6, 1e5, prior_abnormal = 1), "between 0 and 1")
 })
 
 test_that("hmm_transition_logprobs always returns valid rows that sum to 1 in probability space", {
