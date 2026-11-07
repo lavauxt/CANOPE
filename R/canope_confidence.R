@@ -58,9 +58,12 @@ score_canope_confidence <- function(
   cnv_type <- toupper(as.character(cnv_calls$CNV)) 
   genes    <- as.character(cnv_calls$GENE)
 
+  # MLCN must agree with the call direction. (A homozygous deletion, MLCN 0,
+  # is already covered by the DEL branch; it must NOT count as consistent for a
+  # DUP call.) A missing MLCN is never "consistent".
   mlcn_consistent <- (cnv_type == "DEL" & mlcn <= 1L) |
-                     (cnv_type == "DUP" & mlcn >= 3L) |
-                     mlcn == 0L                         
+                     (cnv_type == "DUP" & mlcn >= 3L)
+  mlcn_consistent[is.na(mlcn_consistent)] <- FALSE
 
   gene_flagged <- vapply(genes, function(g) {
     syms <- trimws(unlist(strsplit(g, "[;, ]")))
@@ -84,6 +87,7 @@ score_canope_confidence <- function(
   cnv_calls$Confidence[med_cond]  <- "MEDIUM"
 
   cnv_calls$CN_label <- dplyr::case_when(
+    is.na(mlcn) ~ NA_character_,
     mlcn == 0L ~ "Hom. Del (CN=0)",
     mlcn == 1L ~ "Hem. Del (CN=1)",
     mlcn == 2L ~ "Normal (CN=2)",

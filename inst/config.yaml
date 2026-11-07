@@ -4,15 +4,24 @@
 # GC content computation: either provide fasta_file + bed_file OR bsgenome_pkg + bed_file
 # fasta_file: "data/hg19.fa"   # Uncomment to use FASTA
 bsgenome_pkg: "BSgenome.Hsapiens.UCSC.hg19"   # Alternative: use BSgenome
-samples: "data/TEST"                    # Directory containing .bam files
-bed_file: "data/TEST/TEST.bed"           # Target regions BED file
+samples: "./data/TEST"                    # Directory containing .bam files
+bed_file: "./data/TEST/TEST.bed"           # Target regions BED file
+
+# Optional pre-computed inputs (skip BAM counting / GC computation)
+# reads_file: "data/TEST/counts.tsv"      # chromosome, start, end, GENE, <one column per sample>
+# gc_file: "data/TEST/gc.tsv"             # chromosome, start, end, GENE, GC_CONTENT (matched to targets by coordinates, any row order)
+# sample_table: "data/TEST/samples.tsv"   # sample_name, gender (M/F): used for the PCA colours and the report sex check
+# genome_build: "hg19"                    # label written in the VCF header (inferred from bsgenome_pkg / fasta_file when omitted)
 
 # Output settings
-output_dir: "results"               # Directory for all output files
+output_dir: "results_TEST"               # Directory for all output files
 output_prefix: "TEST"               # Prefix for output file names
 
 # Core HMM / CNV calling parameters
-modechrom: "A"                      # "A" (autosomes), "XX", or "XY"
+modechrom: "A"                      # "A" (autosomes), "XX" (chrX, female references) or "XY" (chrX, male references).
+                                    # One run analyses ONE of these: the report raises a red warning on the Overview and
+                                    # Chromosomes tabs when autosomes and gonosomes were not both analysed.
+removeY: true                       # drop chrY targets (so "XY" analyses chrX only); set false to also call chrY
 min_cor: 0.98                       # Minimum Spearman correlation for references
 p_value: 1e-10                      # HMM transition probability (lower = less sensitive)
 Tnum: 10                            # Expected targets per CNV (higher = fewer small events)
@@ -48,6 +57,13 @@ qc_min_corr: 0.98
 qc_min_cov: 100
 qc_min_total_reads: 300000
 qc_max_exon_cv: 0.5
+qc_zscore: 3                        # robust z-score above which a sample is "noisy" (flagged / excluded)
+exon_mad_quantile: 0.9              # exon-level QC: targets above this quantile of the (log-scale) MAD are dropped
+min_exon_mean: 20                   # exon-level QC: minimum mean count to keep a target
+gc_extreme_filter: [0.15, 0.85]     # keep targets with GC between these fractions
+min_sample_count: 5                 # targets with fewer reads than this in the called sample are removed before the HMM.
+                                    # NOTE: this also hides homozygous deletions (runs are listed in the report);
+                                    # set 0 to keep every target
 
 # Quality / confidence scoring
 score_confidence: true
@@ -73,7 +89,8 @@ generate_plots_flag: true
 pca_plot: true
 export_vcf: true
 vcf_per_sample: false
-report: true
+report: true                        # standalone interactive HTML report (CANOPE_<prefix>_report.html), multi-sample, no Shiny/server needed
+# report_output_dir: "results"      # where to write the report (default: output_dir)
 sample_qc: true
 exon_qc: true
 auto_reference: true

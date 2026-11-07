@@ -49,14 +49,15 @@ export_canope_to_vcf <- function(cnv_calls, output_vcf, sample_name = NULL,
     '##INFO=<ID=SVTYPE,Number=1,Type=String,Description="Type of structural variant (DUP/DEL)">',
     '##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="Difference in length between REF and ALT alleles">',
     '##INFO=<ID=END,Number=1,Type=Integer,Description="End position of the variant described in this record">',
-    '##INFO=<ID=CONFIDENCE,Number=1,Type=String,Description="Confidence level (HIGH/MEDIUM/LOW)">',
+    '##INFO=<ID=CONFIDENCE,Number=1,Type=String,Description="Best confidence level (HIGH/MEDIUM/LOW) among the carrier samples; see FORMAT/CF per sample">',
     '##INFO=<ID=NUMTARG,Number=1,Type=Integer,Description="Number of targets (exons) spanned">',
-    '##INFO=<ID=REFS,Number=.,Type=String,Description="Reference samples used (comma-separated)">',
-    '##INFO=<ID=NCOMP,Number=1,Type=Integer,Description="Number of reference samples">',
-    '##INFO=<ID=QSOME,Number=1,Type=Integer,Description="Phred-scaled probability some CNV exists in this interval (SQ)">',
+    '##INFO=<ID=REFS,Number=.,Type=String,Description="Reference samples used (comma-separated); only written when a single sample carries the call, otherwise they differ per sample">',
+    '##INFO=<ID=NCOMP,Number=1,Type=Integer,Description="Largest number of reference samples among the carrier samples">',
+    '##INFO=<ID=QSOME,Number=1,Type=Integer,Description="Highest phred-scaled probability some CNV exists in this interval (SQ) among the carrier samples; see FORMAT/QS per sample">',
     '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">',
     '##FORMAT=<ID=CN,Number=1,Type=Integer,Description="Most-likely copy number (MLCN)">',
     '##FORMAT=<ID=QS,Number=1,Type=Integer,Description="Per-sample Q_SOME phred score">',
+    '##FORMAT=<ID=CF,Number=1,Type=String,Description="Per-sample confidence level (HIGH/MEDIUM/LOW)">',
     '##ALT=<ID=DUP,Description="Duplication">',
     '##ALT=<ID=DEL,Description="Deletion">',
     paste0("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t",
@@ -81,13 +82,15 @@ export_canope_to_vcf <- function(cnv_calls, output_vcf, sample_name = NULL,
                          key_df$Start, key_df$End, key_df$Type), , drop = FALSE]
 
   make_sample_field <- function(row_df) {
-    if (nrow(row_df) == 0) return("0/0:2:.")
+    if (nrow(row_df) == 0) return("0/0:2:.:.")
     mlcn <- suppressWarnings(as.integer(row_df$MLCN[1]))
-    if (is.na(mlcn)) mlcn <- 2L
     qs <- suppressWarnings(as.integer(row_df$Q_SOME[1]))
     qs_str <- if (is.na(qs)) "." else as.character(qs)
+    cf <- if ("Confidence" %in% colnames(row_df)) safe_char(row_df$Confidence[1]) else "."
+    # An unknown copy number must not be written as a normal (CN=2, 0/0) call.
+    if (is.na(mlcn)) return(paste0("./.:.:", qs_str, ":", cf))
     gt <- if (mlcn == 0L) "1/1" else if (mlcn < 2L) "0/1" else if (mlcn > 2L) "0/1" else "0/0"
-    paste0(gt, ":", mlcn, ":", qs_str)
+    paste0(gt, ":", mlcn, ":", qs_str, ":", cf)
   }
 
   records <- character(nrow(key_df))
@@ -117,30 +120,37 @@ export_canope_to_vcf <- function(cnv_calls, output_vcf, sample_name = NULL,
       paste0("END=", end)
     )
 
-    conf <- if ("Confidence" %in% colnames(representative)) safe_char(representative$Confidence) else "."
-    if (conf != ".") info_items <- c(info_items, paste0("CONFIDENCE=", conf))
+    # Cohort-level INFO fields summarise *all* carriers of this exact call
+    # (previously they were read from the first carrier only).
+    if ("Confidence" %in% colnames(row_hits)) {
+      rank <- c(HIGH = 3L, MEDIUM = 2L, LOW = 1L)
+      cf_all <- toupper(as.character(row_hits$Confidence))
+      cf_all <- cf_all[cf_all %in% names(rank)]
+      if (length(cf_all) > 0)
+        info_items <- c(info_items, paste0("CONFIDENCE=", names(rank)[max(rank[cf_all])]))
+    }
 
     if ("NUM_TARG" %in% colnames(representative)) {
       nt <- safe_char(representative$NUM_TARG)
       if (nt != ".") info_items <- c(info_items, paste0("NUMTARG=", nt))
     }
-    if ("REF_SAMPLES" %in% colnames(representative)) {
+    if ("REF_SAMPLES" %in% colnames(representative) && nrow(row_hits) == 1L) {
       refs_val <- safe_char(representative$REF_SAMPLES, "")
       if (nzchar(refs_val)) {
         refs_vcf <- gsub(";", ",", refs_val, fixed = TRUE)
         info_items <- c(info_items, paste0("REFS=", refs_vcf))
       }
     }
-    if ("NUM_REFS" %in% colnames(representative)) {
-      ncomp <- safe_char(representative$NUM_REFS)
-      if (ncomp != ".") info_items <- c(info_items, paste0("NCOMP=", ncomp))
+    if ("NUM_REFS" %in% colnames(row_hits)) {
+      nr <- suppressWarnings(max(as.integer(row_hits$NUM_REFS), na.rm = TRUE))
+      if (is.finite(nr)) info_items <- c(info_items, paste0("NCOMP=", nr))
     }
-    if ("Q_SOME" %in% colnames(representative)) {
-      qs <- safe_char(representative$Q_SOME)
-      if (qs != ".") info_items <- c(info_items, paste0("QSOME=", qs))
+    if ("Q_SOME" %in% colnames(row_hits)) {
+      qm <- suppressWarnings(max(as.integer(row_hits$Q_SOME), na.rm = TRUE))
+      if (is.finite(qm)) info_items <- c(info_items, paste0("QSOME=", qm))
     }
 
-    format_field  <- "GT:CN:QS"
+    format_field  <- "GT:CN:QS:CF"
     sample_fields <- vapply(samples, function(s) {
       sample_row <- row_hits[row_hits$SAMPLE == s, , drop = FALSE]
       make_sample_field(sample_row)

@@ -73,17 +73,15 @@ generate_plots <- function(
   prefix_str <- if (is.null(prefix) || prefix == "") format(Sys.time(), "%Y%m%d") else prefix
   if (!dir.exists(output_dir)) dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
 
-  inc <- if (modechrom %in% c("XX", "XY")) "chrX" else NULL
+  inc <- if (modechrom == "XX") "chrX" else if (modechrom == "XY") c("chrX", "chrY") else NULL
   exc <- if (modechrom == "A") c("chrX", "chrY") else NULL
   cnv_plot <- canope_filter_chromosomes(cnv_calls, include = inc, exclude = exc)
 
   message(sprintf("[INFO] Number of CNV calls to plot: %d", nrow(cnv_plot)))
 
-  exon_index <- if (ncol(bed_file) >= 5 && identical(colnames(bed_file)[5], "exon")) {
-    bed_file[[5]]
-  } else {
-    compute_exon_index(bed_file)
-  }
+  # Use the exon numbers recorded before QC filtering (bed_file$exon_number)
+  # when the workspace has them; otherwise number the retained exons.
+  exon_index <- compute_exon_index(bed_file)
 
   if (nrow(cnv_plot) == 0) {
     message("[INFO] No CNV calls match chromosome filter.")
@@ -124,6 +122,13 @@ generate_plots <- function(
       exon_range <- exon_range[bed_file$chromosome[exon_range] == target_chr]
     }
 
+    # Only exons the HMM actually evaluated for this sample: targets dropped
+    # for this sample (low reference mean / near-zero reads) have no model
+    # statistics and would otherwise be drawn with median-imputed values.
+    model_targets <- models[[sample_name]]$target
+    if (!is.null(model_targets) && length(exon_range) > 0L)
+      exon_range <- exon_range[bed_file$target[exon_range] %in% model_targets]
+
     if (length(exon_range) == 0L) {
       message(sprintf("[WARN] No targets in range for call %d (%s)", call_idx, sample_name))
       next
@@ -134,8 +139,10 @@ generate_plots <- function(
     px         <- gap_pos$px
     gene_group <- gap_pos$gene_group
 
-    cnv_rows <- targets_to_rows(seq(idx_start, idx_end), bed_file$target)
-    cnv_rows <- cnv_rows[!is.na(cnv_rows)]
+    # Rows of the call = every retained target whose id lies in the call's
+    # range (ids dropped by QC are simply absent, not "unmatched").
+    cnv_rows <- which(bed_file$target >= idx_start & bed_file$target <= idx_end &
+                        bed_file$chromosome == target_chr)
 
     tryCatch({
       if (!sample_name %in% names(refs))

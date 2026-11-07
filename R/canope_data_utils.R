@@ -330,41 +330,56 @@ compute_gc_from_bed <- function(bsgenome_pkg, bed_input) {
 
 # Align a GC table to the target rows without relying on row order.
 # Coordinates are the shared identity between the GC source and count table.
+#
+# Vectorised (hash lookups via match()): the previous implementation compared
+# every GC key against the full key vector once per unique key, which is
+# O(n^2) and takes hours on a whole-exome target set.
+#
+# A pre-computed counts table is often written from a 0-based BED while the GC
+# table (built by compute_gc_from_*) is 1-based, so when *no* coordinate
+# matches at all, a uniform +1 offset on the target start is tried before
+# giving up. A partial match is never "repaired".
 .align_gc_to_targets <- function(gc_data, targets) {
   gc <- as.numeric(gc_data$GC_CONTENT)
   coord_cols <- c("chromosome", "start", "end")
 
   if (all(coord_cols %in% names(gc_data)) && all(coord_cols %in% names(targets))) {
-    make_key <- function(data) {
+    make_key <- function(data, start_shift = 0) {
       raw_chromosome <- as.character(data$chromosome)
       if (anyNA(raw_chromosome) || any(!nzchar(raw_chromosome))) {
         stop("[ERROR] GC alignment requires non-missing chromosome, start, and end coordinates.")
       }
       chromosome <- format_chr_label(raw_chromosome)
-      start <- suppressWarnings(as.numeric(data$start))
+      start <- suppressWarnings(as.numeric(data$start)) + start_shift
       end <- suppressWarnings(as.numeric(data$end))
       if (anyNA(chromosome) || anyNA(start) || anyNA(end) ||
           any(!is.finite(start)) || any(!is.finite(end))) {
         stop("[ERROR] GC alignment requires non-missing chromosome, start, and end coordinates.")
       }
-      start <- as.character(start)
-      end <- as.character(end)
-      paste0(nchar(chromosome), "#", chromosome, "#", start, "#", end)
+      paste0(nchar(chromosome), "#", chromosome, "#", format(start, scientific = FALSE, trim = TRUE),
+             "#", format(end, scientific = FALSE, trim = TRUE))
     }
 
     gc_keys <- make_key(gc_data)
-    target_keys <- make_key(targets)
-    unique_gc_keys <- unique(gc_keys)
-    gc_by_key <- vapply(unique_gc_keys, function(key) {
-      values <- unique(gc[gc_keys == key & !is.na(gc)])
-      if (length(values) > 1L) {
-        stop("[ERROR] GC data contains conflicting values for duplicate coordinates.")
-      }
-      if (length(values) == 0L) NA_real_ else values[[1L]]
-    }, numeric(1))
+    ok <- !is.na(gc)
+    keys_ok <- gc_keys[ok]
+    vals_ok <- gc[ok]
+    first_pos <- match(keys_ok, keys_ok)
+    if (any(vals_ok != vals_ok[first_pos])) {
+      stop("[ERROR] GC data contains conflicting values for duplicate coordinates.")
+    }
 
-    matched <- match(target_keys, unique_gc_keys)
-    gc <- unname(gc_by_key[matched])
+    target_keys <- make_key(targets)
+    matched <- match(target_keys, keys_ok)
+    if (all(is.na(matched)) && length(keys_ok) > 0L) {
+      shifted <- match(make_key(targets, start_shift = 1), keys_ok)
+      if (!all(is.na(shifted))) {
+        message("[INFO] GC table coordinates match the count table only after a +1 start shift ",
+                "(0-based vs 1-based BED); applying it.")
+        matched <- shifted
+      }
+    }
+    gc <- vals_ok[matched]
   } else if (length(gc) != nrow(targets)) {
     stop("[ERROR] GC data has ", length(gc), " value(s) for ", nrow(targets),
          " target(s), and coordinate columns are unavailable for alignment.")
@@ -378,8 +393,42 @@ compute_gc_from_bed <- function(bsgenome_pkg, bed_input) {
   gc
 }
 
+#' Read a BED file into a GenomicRanges object (no rtracklayer)
+#'
+#' \code{rtracklayer::import(format = "BED")} strictly parses BED column 5
+#' (score) as a real number, so files produced by \code{process_bed_file()}
+#' — whose 5th column can be the string \code{"NA"} for off-target intervals
+#' — blow up with \code{scan() expected 'a real', got 'NA'}. CANOPE only ever
+#' needs the first three columns (chrom / start / end) plus, optionally, the
+#' 4th as a \code{name}. Reading those manually is fast, robust and removes
+#' any dependency on BED column layout beyond that.
+#'
+#' @param bed_path Path to a BED file (0-based, half-open coordinates).
+#' @return A \code{GRanges} (1-based, inclusive).
+#' @noRd
+.read_bed_as_granges <- function(bed_path) {
+  raw <- utils::read.table(
+    bed_path, sep = "\t", header = FALSE, stringsAsFactors = FALSE,
+    comment.char = "", quote = "", fill = TRUE
+  )
+  if (ncol(raw) < 3)
+    stop("[ERROR] BED file must have at least 3 columns: ", bed_path)
+
+  gr <- GenomicRanges::GRanges(
+    seqnames = as.character(raw[[1]]),
+    ranges   = IRanges::IRanges(
+      start = as.integer(raw[[2]]) + 1L,   # BED 0-based -> GRanges 1-based
+      end   = as.integer(raw[[3]])
+    )
+  )
+  if (ncol(raw) >= 4)
+    S4Vectors::mcols(gr)$name <- as.character(raw[[4]])
+  gr
+}
+
+
 #' Get Read Coverage from BAM files
-#' 
+#'
 #' @param bam_files Character vector of BAM file paths.
 #' @param bed_input Path to a BED file, or a \code{GRanges} object of targets.
 #' @param single_end Logical or \code{NULL} (default). If \code{NULL}, auto-detect
@@ -388,7 +437,7 @@ compute_gc_from_bed <- function(bsgenome_pkg, bed_input) {
 #' @export
 get_coverage_from_bams <- function(bam_files, bed_input, single_end = NULL) {
   if (is.character(bed_input)) {
-    targets <- rtracklayer::import(bed_input, format = "BED")
+    targets <- .read_bed_as_granges(bed_input)
   } else if (inherits(bed_input, "GRanges")) {
     targets <- bed_input
   } else {
@@ -408,6 +457,11 @@ get_coverage_from_bams <- function(bam_files, bed_input, single_end = NULL) {
     message("[INFO] Auto-detected BAM type: ", if (single_end) "single-end" else "paired-end")
   }
 
+  no_index <- bam_files[!vapply(bam_files, bam_has_index, logical(1))]
+  if (length(no_index) > 0L)
+    stop("[ERROR] No index (.bai) found for ", length(no_index), " BAM file(s), e.g. ",
+         no_index[1], ". Run 'samtools index' on each BAM first.")
+
   bam_list <- Rsamtools::BamFileList(bam_files, yieldSize = 100000)
 
   se <- GenomicAlignments::summarizeOverlaps(
@@ -420,7 +474,6 @@ get_coverage_from_bams <- function(bam_files, bed_input, single_end = NULL) {
 
   return(counts_matrix)
 }
-
 
 #' Parse a Single Megadepth \code{*.annotation.tsv} File
 #'

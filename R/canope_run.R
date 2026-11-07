@@ -41,7 +41,8 @@
 #' @param reads_file         Character or NULL. Path to pre-computed counts table
 #'   (expected layout: \code{chromosome, start, end, GENE, <sample columns...>}).
 #' @param modechrom          Character. "A" (autosomes), "XX", or "XY".
-#' @param removeY            Logical. If TRUE, exclude chrY targets.
+#' @param removeY            Logical. If TRUE (default), exclude chrY targets (so
+#'   \code{modechrom = "XY"} analyses chrX only unless \code{removeY = FALSE}).
 #' @param samples            Character. Directory of BAMs or path to BAM list file.
 #' @param p_value            Numeric. Prior CNV probability per target.
 #' @param Tnum               Numeric. Expected number of targets per CNV.
@@ -56,6 +57,13 @@
 #' @param exon_mad_quantile  Numeric. MAD quantile threshold for exon QC.
 #' @param gc_extreme_filter  Numeric[2]. Min/max GC (fraction, 0-1) to retain a target.
 #' @param min_exon_mean      Numeric. Minimum mean count to retain a target.
+#' @param min_sample_count   Integer. Targets where the sample being called has
+#'   fewer reads than this are excluded before HMM calling (default 5). This also
+#'   hides homozygous deletions; runs of such targets are listed in the report.
+#'   See \code{\link{call_cnvs}}.
+#' @param genome_build       Optional genome build label for the VCF header
+#'   (e.g. \code{"hg38"}). If \code{NULL} it is inferred from
+#'   \code{bsgenome_pkg} / \code{fasta_file}.
 #' @param output_file        Character. Path for CSV output.
 #' @param rdata_output       Character. Path for RData workspace output.
 #' @param output_prefix      Character. Base prefix for all output files (e.g. "CANOPE_TEST").
@@ -142,7 +150,8 @@
 #'   (\code{\link{generate_canope_report}}). Default TRUE.
 #' @param report_output_dir  Directory for the rendered HTML. Default derived from
 #'   \code{output_file}.
-#' @param report_template    Optional explicit path to \code{CANOPE_report.Rmd}.
+#' @param report_template    Deprecated and ignored: the report is no longer an
+#'   R Markdown template (see \code{\link{generate_canope_report}}).
 #' @param log_file           Optional path to write a pipeline log (also shown in
 #'   the HTML report). Default derived from \code{output_file}'s directory.
 #'
@@ -157,6 +166,7 @@ run_canope <- function(
     auto_reference = TRUE, sample_qc = TRUE, exon_qc = TRUE,
     qc_zscore = 3, exon_mad_quantile = 0.90,
     gc_extreme_filter = c(0.15, 0.85), min_exon_mean = 20,
+    min_sample_count = 5L, genome_build = NULL,
     output_file = "CNVCall.csv", rdata_output = "canope_workspace.RData",
     output_prefix = NULL,
     refbams_file = NULL, ref_reads = NULL, bed_file = NULL,
@@ -188,7 +198,7 @@ run_canope <- function(
       output_prefix <- tools::file_path_sans_ext(base)
     }
   }
-  if (!grepl("^CANOPE_", output_prefix)) {
+  if (!identical(output_prefix, "CANOPE") && !grepl("^CANOPE_", output_prefix)) {
     output_prefix <- paste0("CANOPE_", output_prefix)
   }
 
@@ -232,6 +242,20 @@ run_canope <- function(
   }
 
   samples_to_analyse <- sapply(samplesbams, clean_name, USE.NAMES = FALSE)
+  if (anyDuplicated(samples_to_analyse)) {
+    dups <- unique(samples_to_analyse[duplicated(samples_to_analyse)])
+    stop("[ERROR] Sample names derived from the BAM file names are not unique (",
+         paste(utils::head(dups, 5), collapse = ", "),
+         "): the name is the part of the file name before the first '.', so e.g. ",
+         "'P1.A.bam' and 'P1.B.bam' both become 'P1'. Rename the BAM files.")
+  }
+
+  sample_table_df <- NULL
+  if (!is.null(sample_table) && file.exists(sample_table)) {
+    sample_table_df <- utils::read.table(sample_table, header = TRUE, sep = "\t",
+                                         stringsAsFactors = FALSE, check.names = FALSE)
+    if (!"sample_name" %in% colnames(sample_table_df)) sample_table_df <- NULL
+  }
 
   if (!is.null(reads_file) && file.exists(reads_file)) {
     canope.reads_un <- utils::read.table(reads_file, header = TRUE,
@@ -284,7 +308,7 @@ run_canope <- function(
     )
     colnames(counts_df) <- samples_to_analyse
 
-    bed_gr      <- rtracklayer::import(bed_file)
+    bed_gr      <- .read_bed_as_granges(bed_file)
     coords_full <- as.data.frame(bed_gr)
     gene_names  <- if ("name" %in% colnames(coords_full))
       coords_full$name else paste0("Target_", seq_len(nrow(coords_full)))
@@ -409,6 +433,32 @@ run_canope <- function(
   chrX_label <- if (has_chr_prefix) "chrX" else "X"
   chrY_label <- if (has_chr_prefix) "chrY" else "Y"
 
+  # Inventory of what the BED/count table holds *before* modechrom / removeY
+  # decide what gets analysed, so the report can state exactly which chromosome
+  # classes were left out, and give a per-chromosome coverage / sex check.
+  input_chromosomes <- unique(as.character(canope.reads$chromosome))
+  chrom_inventory <- local({
+    chr_all <- as.character(canope.reads$chromosome)
+    ucs <- unique(chr_all)
+    data.frame(chromosome = ucs, class = canope_chrom_class(ucs),
+               n_targets_input = as.integer(table(factor(chr_all, levels = ucs))),
+               stringsAsFactors = FALSE)
+  })
+  chrom_depth <- tryCatch({
+    chr_all <- as.character(canope.reads$chromosome)
+    auto <- canope_chrom_class(chr_all) == "autosome"
+    cd <- vapply(target_samples, function(sn) {
+      v <- as.numeric(canope.reads[[sn]])
+      base <- stats::median(v[auto], na.rm = TRUE)
+      vapply(split(v, factor(chr_all, levels = chrom_inventory$chromosome)),
+             function(x) if (is.finite(base) && base > 0) stats::median(x, na.rm = TRUE) / base else NA_real_,
+             numeric(1))
+    }, numeric(length(chrom_inventory$chromosome)))
+    if (is.null(dim(cd))) cd <- matrix(cd, nrow = length(chrom_inventory$chromosome),
+                                       dimnames = list(chrom_inventory$chromosome, target_samples))
+    cd
+  }, error = function(e) NULL)
+
   if (modechrom == "XX")
     canope.reads <- subset(canope.reads, chromosome == chrX_label)
   else if (modechrom == "XY")
@@ -431,15 +481,35 @@ run_canope <- function(
   chrom_base   <- c(as.character(1:22), "X", "Y", "M")
   chrom.levels <- if (has_chr_prefix) paste0("chr", chrom_base) else chrom_base
   canope.reads$chromosome <- factor(canope.reads$chromosome, levels = chrom.levels)
+  nonstd <- is.na(canope.reads$chromosome)
+  if (any(nonstd)) {
+    log_msg("WARNING", sprintf(
+      "Dropping %d target(s) on non-standard contig(s) (not chr1-22/X/Y/M), e.g. alt/random/Un contigs: %s",
+      sum(nonstd), paste(utils::head(unique(chrom_inventory$chromosome[!chrom_inventory$chromosome %in% chrom.levels]), 5), collapse = ", ")))
+    canope.reads <- canope.reads[!nonstd, , drop = FALSE]
+    if (nrow(canope.reads) == 0) stop("[ERROR] No targets remain on standard chromosomes.")
+  }
   canope.reads <- canope.reads[order(canope.reads$chromosome, canope.reads$start, canope.reads$end), ]
   canope.reads <- canope.reads[!duplicated(canope.reads[, c("chromosome", "start", "end")]), ]
   rownames(canope.reads) <- NULL
+  # Target ids must increase with genomic position: the HMM, the Q_SOME
+  # likelihoods and the plots treat "TARGETS = a..b" as a contiguous range. The
+  # ids were assigned in *input* order, which is not genomic order for a BED
+  # sorted lexicographically (chr1, chr10, ..., chr2) or left unsorted.
+  canope.reads$target <- seq_len(nrow(canope.reads))
+  n_targets_input <- nrow(canope.reads)
+  # Exon numbers are fixed here, before QC removes exons, so a plot label
+  # always means the exon's true position in its gene.
+  exon_number_full <- assign_exon_numbers_per_gene(data.frame(
+    chromosome = as.character(canope.reads$chromosome), start = canope.reads$start,
+    end = canope.reads$end, GENE = canope.reads$GENE, stringsAsFactors = FALSE))$exon_number
 
   count_matrix <- as.matrix(canope.reads[, target_samples, drop = FALSE])
   storage.mode(count_matrix) <- "numeric"
 
   keep_gc      <- !is.na(canope.reads$gc) &
     canope.reads$gc >= gc_extreme_filter[1] & canope.reads$gc <= gc_extreme_filter[2]
+  n_removed_gc <- sum(!keep_gc)
   canope.reads <- canope.reads[keep_gc, , drop = FALSE]
   count_matrix <- count_matrix[keep_gc, , drop = FALSE]
 
@@ -453,18 +523,27 @@ run_canope <- function(
   count_matrix <- round(pmax(count_matrix, 0))
   canope.reads[, target_samples] <- count_matrix
 
+  sqc <- detect_outlier_samples(count_matrix, z_threshold = qc_zscore)
+  excluded_samples <- data.frame(sample = character(0), reason = character(0), stringsAsFactors = FALSE)
   if (sample_qc) {
-    sqc  <- detect_outlier_samples(count_matrix, z_threshold = qc_zscore)
     excl <- sqc$sample[sqc$is_outlier]
     if (length(excl) > 0) {
-      log_msg("WARNING", sprintf("Excluding %d outlier sample(s): %s",
+      log_msg("WARNING", sprintf("Excluding %d noisy outlier sample(s): %s",
                                  length(excl), paste(excl, collapse = ", ")))
+      excluded_samples <- data.frame(
+        sample = excl,
+        reason = sprintf("noisy outlier (robust z = %.2f > %g)", sqc$robust_z[match(excl, sqc$sample)], qc_zscore),
+        stringsAsFactors = FALSE)
       target_samples     <- setdiff(target_samples, excl)
       samples_to_analyse <- intersect(samples_to_analyse, target_samples)
       count_matrix       <- count_matrix[, target_samples, drop = FALSE]
       canope.reads       <- canope.reads[, c("target", "gc", "GENE", "chromosome", "start", "end", target_samples)]
     }
   }
+  if (length(target_samples) < 4L)
+    log_msg("WARNING", sprintf(
+      "Only %d sample(s) left for calling; CANOPE needs >= 3 reference samples per sample, so calls are unlikely or unreliable.",
+      length(target_samples)))
 
   if (exon_qc) {
     eqc <- detect_problematic_exons(
@@ -475,11 +554,13 @@ run_canope <- function(
       gc           = canope.reads$gc
     )
     good_exons   <- eqc$exon[!eqc$problematic]
+    n_removed_exon_qc <- sum(eqc$problematic)
     canope.reads <- canope.reads[good_exons, , drop = FALSE]
     count_matrix <- count_matrix[good_exons, , drop = FALSE]
     rownames(canope.reads) <- NULL
   }
 
+  if (!exists("n_removed_exon_qc", inherits = FALSE)) n_removed_exon_qc <- 0L
   required_first <- c("target", "chromosome", "start", "end", "gc")
   missing_meta <- setdiff(required_first, colnames(canope.reads))
   if (length(missing_meta) > 0)
@@ -499,9 +580,26 @@ run_canope <- function(
   all_cnvs <- list()
   models_list <- list()
   refs_list   <- list()
+  status_rows <- list()
+  low_cov_runs <- list()
+
+  add_status <- function(sample, status, message = "", n_cnvs = 0L, n_targets = NA_integer_,
+                         n_low_count = NA_integer_, n_refs = NA_integer_, ref_cor = NA_real_,
+                         genotyped = NA) {
+    status_rows[[sample]] <<- data.frame(
+      sample = sample, status = status, message = paste(message, collapse = " | "),
+      n_cnvs = as.integer(n_cnvs), n_targets = as.integer(n_targets),
+      n_low_count_dropped = as.integer(n_low_count), n_refs = as.integer(n_refs),
+      ref_cor_median = as.numeric(ref_cor), genotyped = genotyped,
+      stringsAsFactors = FALSE)
+  }
+  if (nrow(excluded_samples) > 0)
+    for (i in seq_len(nrow(excluded_samples)))
+      add_status(excluded_samples$sample[i], "excluded", excluded_samples$reason[i])
 
   for (samp in samples_to_analyse) {
     log_msg("INFO", sprintf("Calling CNVs for sample %s ...", samp))
+    warn_msgs <- character(0)
     tryCatch({
       refs_to_use <- if (auto_reference && !is.null(auto_refs)) auto_refs[[samp]] else refsample_names
       if (auto_reference && is.null(refs_to_use)) {
@@ -511,13 +609,20 @@ run_canope <- function(
         ))
       }
 
-      res <- call_cnvs(
-        sample_name = samp, counts = canope.reads,
-        p = p_value, Tnum = Tnum, D = D, numrefs = numrefs,
-        get_dfs = FALSE, homdel_mean = homdel_mean,
-        refsample_names = refs_to_use, full_output = TRUE,
-        min_cor = min_cor, decode_method = decode_method, engine = engine
-      )
+      res <- withCallingHandlers(
+        call_cnvs(
+          sample_name = samp, counts = canope.reads,
+          p = p_value, Tnum = Tnum, D = D, numrefs = numrefs,
+          get_dfs = FALSE, homdel_mean = homdel_mean,
+          refsample_names = refs_to_use, full_output = TRUE,
+          min_cor = min_cor, decode_method = decode_method, engine = engine,
+          min_sample_count = min_sample_count
+        ),
+        warning = function(w) {
+          warn_msgs <<- c(warn_msgs, conditionMessage(w))
+          log_msg("WARNING", samp, ": ", conditionMessage(w))
+          invokeRestart("muffleWarning")
+        })
 
       n_called <- if (!is.null(res) && !is.null(res$cnvs)) nrow(res$cnvs) else 0L
       log_msg("INFO", sprintf("  -> %d CNV(s) found for %s", n_called, samp))
@@ -528,18 +633,34 @@ run_canope <- function(
         target = res$targets, mean = res$mean, var_estimate = res$var_estimate,
         test_counts = res$test_counts, ref_matrix = res$ref_matrix
       )
+      if (!is.null(res$low_coverage_runs) && nrow(res$low_coverage_runs) > 0) {
+        low_cov_runs[[samp]] <- cbind(SAMPLE = samp, res$low_coverage_runs, stringsAsFactors = FALSE)
+        log_msg("WARNING", sprintf(
+          "%s: %d run(s) of >= 3 consecutive targets with ~no reads were excluded before calling (possible homozygous deletion / capture dropout; not callable with min_sample_count = %d).",
+          samp, nrow(res$low_coverage_runs), as.integer(min_sample_count)))
+      }
+      add_status(samp, "called", warn_msgs, n_cnvs = n_called, n_targets = res$n_targets_used,
+                 n_low_count = res$n_low_count_dropped, n_refs = length(res$reference_samples),
+                 ref_cor = stats::median(res$ref_cor, na.rm = TRUE), genotyped = isTRUE(res$genotyped))
     }, error = function(e) {
       log_msg("WARNING", sprintf("Sample %s failed: %s", samp, conditionMessage(e)))
+      add_status(samp, "failed", c(conditionMessage(e), warn_msgs))
     })
   }
 
-  final_cnvs <- if (length(all_cnvs) > 0) do.call(rbind, all_cnvs) else data.frame()
+  scored <- isTRUE(score_confidence)
+  final_cnvs <- if (length(all_cnvs) > 0) do.call(rbind, all_cnvs) else .empty_cnv_calls(scored = scored)
   rownames(final_cnvs) <- NULL
 
-  if (score_confidence && nrow(final_cnvs) > 0) {
+  if (scored && nrow(final_cnvs) > 0) {
     log_msg("INFO", "Scoring CNV confidence")
     final_cnvs <- do.call(score_canope_confidence, c(list(cnv_calls = final_cnvs), confidence_args))
   }
+
+  failed_samples <- vapply(status_rows, function(r) identical(r$status, "failed"), logical(1))
+  if (any(failed_samples))
+    log_msg("WARNING", sprintf("%d sample(s) FAILED and have no calls (this is not the same as 'no CNV found'): %s",
+                               sum(failed_samples), paste(names(status_rows)[failed_samples], collapse = ", ")))
 
   for (path in c(output_file, rdata_output)) {
     d <- dirname(path)
@@ -549,18 +670,82 @@ run_canope <- function(
   plot_dir <- file.path(dirname(output_file), "plots")
   if (!dir.exists(plot_dir)) dir.create(plot_dir, recursive = TRUE)
 
-  if (!is.null(output_file) && nrow(final_cnvs) > 0)
+  # Always write the table (header only if nothing was called) so downstream
+  # steps and the HTML report never have to guess whether the run happened.
+  if (!is.null(output_file))
     utils::write.csv(final_cnvs, output_file, row.names = FALSE)
+
+  # ---- run summary stored with the workspace (consumed by the HTML report) ----
+  chromosome_check <- canope_chromosome_status(input_chromosomes, as.character(canope.reads$chromosome),
+                                               modechrom = modechrom, removeY = removeY)
+  for (msg in chromosome_check$messages) log_msg("WARNING", msg)
+
+  sample_status <- if (length(status_rows) > 0) do.call(rbind, status_rows) else data.frame()
+  rownames(sample_status) <- NULL
+  sex_check <- if (!is.null(chrom_depth)) canope_infer_sex(chrom_depth) else NULL
+  if (!is.null(sex_check)) {
+    annotated <- if (!is.null(sample_table_df) && "gender" %in% colnames(sample_table_df))
+      .canope_norm_sex(sample_table_df$gender[match(sex_check$sample, sample_table_df$sample_name)])
+    else rep(NA_character_, nrow(sex_check))
+    sex_check$annotated_sex <- annotated
+    sex_check$mismatch <- !is.na(annotated) & sex_check$inferred_sex %in% c("F", "M") &
+      annotated != sex_check$inferred_sex
+    expected <- switch(modechrom, XX = "F", XY = "M", NA_character_)
+    sex_check$mode_mismatch <- if (is.na(expected)) FALSE else {
+      known <- ifelse(!is.na(annotated), annotated, ifelse(sex_check$inferred_sex %in% c("F", "M"), sex_check$inferred_sex, NA_character_))
+      !is.na(known) & known != expected
+    }
+    if (any(sex_check$mismatch))
+      log_msg("WARNING", sprintf("Annotated sex disagrees with chrX/chrY coverage for: %s",
+                                 paste(sex_check$sample[sex_check$mismatch], collapse = ", ")))
+    if (any(sex_check$mode_mismatch & sex_check$sample %in% samples_to_analyse))
+      log_msg("WARNING", sprintf("modechrom = '%s' but these analysed samples look like the other sex: %s",
+                                 modechrom, paste(sex_check$sample[sex_check$mode_mismatch & sex_check$sample %in% samples_to_analyse], collapse = ", ")))
+  }
+
+  if (is.null(genome_build))
+    genome_build <- canope_infer_genome_build(bsgenome_pkg, fasta_file, bed_process_args$genome_version)
+
+  run_info <- list(
+    canope_version = tryCatch(as.character(utils::packageVersion("CANOPE")), error = function(e) "dev"),
+    generated = format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+    prefix = output_prefix, modechrom = modechrom, removeY = removeY, engine = engine,
+    decode_method = decode_method, coverage_backend = coverage_backend,
+    genome_build = genome_build,
+    params = list(
+      p_value = p_value, Tnum = Tnum, D = D, numrefs = numrefs, min_cor = min_cor,
+      homdel_mean = homdel_mean, min_sample_count = min_sample_count,
+      auto_reference = auto_reference, sample_qc = sample_qc, exon_qc = exon_qc,
+      qc_zscore = qc_zscore, exon_mad_quantile = exon_mad_quantile,
+      gc_extreme_filter = gc_extreme_filter, min_exon_mean = min_exon_mean,
+      pad_terminal_exons = pad_terminal_exons, bed_process = bed_process),
+    thresholds = list(qc_min_corr = qc_min_corr, qc_min_cov = qc_min_cov,
+                      qc_min_total_reads = qc_min_total_reads, qc_max_exon_cv = qc_max_exon_cv),
+    chromosome_status = chromosome_check$status,
+    chromosome_messages = chromosome_check$messages,
+    chromosome_inventory = chrom_inventory,
+    chrom_depth = chrom_depth,
+    sex_check = sex_check,
+    n_targets = list(input = n_targets_input, removed_gc = n_removed_gc,
+                     removed_exon_qc = n_removed_exon_qc, analysed = nrow(canope.reads)),
+    samples_requested = all_sample_names,
+    samples_analysed = samples_to_analyse,
+    sample_status = sample_status,
+    sample_noise = sqc,
+    low_coverage_runs = if (length(low_cov_runs) > 0) do.call(rbind, low_cov_runs) else NULL,
+    sample_table = sample_table_df
+  )
 
   if (!is.null(rdata_output)) {
     cnv_calls <- final_cnvs
     counts    <- canope.reads
     bed_file_obj <- canope.reads[, c("chromosome", "start", "end", "target", "gc", "GENE")]
+    bed_file_obj$exon_number <- exon_number_full[bed_file_obj$target]
     bed_file <- bed_file_obj
     models <- models_list
     refs   <- refs_list
     hmm_engine_used <- engine
-    save(cnv_calls, counts, bed_file, models, refs, hmm_engine_used, file = rdata_output)
+    save(cnv_calls, counts, bed_file, models, refs, hmm_engine_used, run_info, file = rdata_output)
 
     if (generate_plots_flag && nrow(final_cnvs) > 0) {
       log_msg("INFO", "Generating static CNV plots")
@@ -586,7 +771,9 @@ run_canope <- function(
         counts = canope.reads, sample_names = target_samples, bed_df = bed_for_qc,
         output_file = qc_output_file,
         min_corr = qc_min_corr, min_cov = qc_min_cov,
-        min_total_reads = qc_min_total_reads, max_exon_cv = qc_max_exon_cv
+        min_total_reads = qc_min_total_reads, max_exon_cv = qc_max_exon_cv,
+        all_chromosomes = input_chromosomes, modechrom = modechrom, removeY = removeY,
+        excluded_samples = excluded_samples
       )
       qc_metrics_path <- qc_output_file
     }, error = function(e) log_msg("WARNING", "QC metrics step failed: ", conditionMessage(e)))
@@ -598,11 +785,8 @@ run_canope <- function(
     }
     log_msg("INFO", "Generating coverage PCA plot")
     color_by <- NULL
-    if (!is.null(sample_table) && file.exists(sample_table)) {
-      st <- utils::read.table(sample_table, header = TRUE, sep = "\t", stringsAsFactors = FALSE)
-      if (all(c("sample_name", "gender") %in% colnames(st)))
-        color_by <- st$gender[match(target_samples, st$sample_name)]
-    }
+    if (!is.null(sample_table_df) && "gender" %in% colnames(sample_table_df))
+      color_by <- sample_table_df$gender[match(target_samples, sample_table_df$sample_name)]
     tryCatch(
       plot_coverage_pca(canope.reads, target_samples, output_pdf = pca_output_file, color_by = color_by),
       error = function(e) log_msg("WARNING", "PCA plot step failed: ", conditionMessage(e))
@@ -614,39 +798,49 @@ run_canope <- function(
       vcf_output <- file.path(out_dir, paste0(output_prefix, "_calls.vcf"))
     }
     log_msg("INFO", "Exporting CNV calls to VCF")
-    tryCatch(export_canope_to_vcf(final_cnvs, vcf_output),
+    tryCatch(export_canope_to_vcf(final_cnvs, vcf_output, reference = genome_build),
             error = function(e) log_msg("WARNING", "VCF export failed: ", conditionMessage(e)))
     if (vcf_per_sample) {
       for (samp in unique(final_cnvs$SAMPLE)) {
         tryCatch(
           export_canope_to_vcf(final_cnvs, file.path(out_dir, paste0(sanitize_filename(samp), ".vcf")),
-                               sample_name = samp),
+                               sample_name = samp, reference = genome_build),
           error = function(e) log_msg("WARNING", sprintf("VCF export failed for %s: %s", samp, conditionMessage(e)))
         )
       }
     }
   }
 
-  if (report && nrow(final_cnvs) > 0) {
-    if (is.null(report_output_dir)) report_output_dir <- out_dir
-    report_prefix <- sub("^CANOPE_", "", output_prefix)
-    log_msg("INFO", "Rendering interactive HTML report")
-    tryCatch(
-      generate_canope_report(
-        rdata_output = rdata_output,
-        qc_metrics_file = qc_metrics_path,
-        output_dir = report_output_dir,
-        prefix = report_prefix,
-        settings = c(list(low_confidence_genes = c("PMS2", "SMN1", "CYP2D6", "HBA1", "HBA2",
-                                                    "STRC", "CYP21A2", "GBA1", "CFTR"),
-                          qc_min_cov = qc_min_cov, qc_min_total_reads = qc_min_total_reads,
-                          plot_gene_gap = plot_gene_gap),
-                    confidence_args),
-        sample_table = sample_table, log_file = log_file,
-        template_path = report_template
-      ),
-      error = function(e) log_msg("WARNING", "Report generation failed: ", conditionMessage(e))
-    )
+  # The report is rendered even when nothing was called: that is exactly when
+  # the QC metrics and the warnings (failed / excluded samples, chromosomes not
+  # analysed) matter most.
+  if (report) {
+    if (is.null(rdata_output)) {
+      log_msg("WARNING", "report = TRUE needs rdata_output; skipping the HTML report.")
+    } else {
+      if (is.null(report_output_dir)) report_output_dir <- out_dir
+      report_prefix <- sub("^CANOPE_?", "", output_prefix)
+      log_msg("INFO", "Rendering interactive HTML report")
+      tryCatch(
+        generate_canope_report(
+          rdata_output = rdata_output,
+          qc_metrics_file = qc_metrics_path,
+          output_dir = report_output_dir,
+          prefix = report_prefix,
+          # user-supplied confidence_args override the defaults shown in the report
+          settings = utils::modifyList(
+            c(lapply(formals(score_canope_confidence)[c("high_q_score", "med_q_score", "high_num_refs",
+                                                        "med_num_refs", "high_num_targ", "med_num_targ",
+                                                        "low_confidence_genes")], eval),
+              list(qc_min_cov = qc_min_cov, qc_min_total_reads = qc_min_total_reads,
+                   qc_min_corr = qc_min_corr, qc_max_exon_cv = qc_max_exon_cv,
+                   plot_gene_gap = plot_gene_gap)),
+            confidence_args),
+          sample_table = sample_table, log_file = log_file
+        ),
+        error = function(e) log_msg("WARNING", "Report generation failed: ", conditionMessage(e))
+      )
+    }
   }
 
   log_msg("INFO", sprintf("Pipeline complete: %d CNV(s) called across %d sample(s)",

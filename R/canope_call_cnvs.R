@@ -57,8 +57,18 @@ get_distances <- function(counts) {
 #'   \code{canoes_legacy_engine.R} for exactly what that does and doesn't
 #'   change vs. \code{"new"}). Everything upstream of the HMM — reference
 #'   selection, NNLS weighting, variance estimation — is identical either way.
+#' @param min_sample_count Integer. Targets where the \emph{test sample} has
+#'   fewer than this many reads are excluded before HMM calling (they are
+#'   treated as capture dropout). Default \code{5}. Note that this also makes a
+#'   \emph{homozygous} deletion, whose exons read ~0, invisible to the HMM;
+#'   such stretches are reported in \code{low_coverage_runs} of the full output
+#'   (and as a warning in the HTML report). Set \code{0} to keep every target
+#'   and let the HMM / \code{homdel_mean} model call homozygous deletions
+#'   (more sensitive, but also more prone to calling dropouts).
 #'
-#' @return A data frame of called CNVs (or a list if \code{full_output = TRUE}).
+#' @return A data frame of called CNVs (or a list if \code{full_output = TRUE},
+#'   which additionally carries \code{n_targets_used}, \code{n_low_count_dropped},
+#'   \code{low_coverage_runs} and \code{genotyped}).
 #' @export
 call_cnvs <- function(
     sample_name,
@@ -74,7 +84,8 @@ call_cnvs <- function(
     min_cor = NULL,
     decode_method = c("distance", "stationary"),
     max_genotype = 200L,
-    engine = c("new", "legacy_canoes")
+    engine = c("new", "legacy_canoes"),
+    min_sample_count = 5L
 ) {
   decode_method <- match.arg(decode_method)
   engine <- match.arg(engine)
@@ -120,14 +131,10 @@ call_cnvs <- function(
   if (p <= 0 || Tnum <= 0 || D <= 0 || numrefs <= 0)
     stop("Parameters p, Tnum, D, and numrefs must all be positive")
 
-  chr <- as.character(counts$chromosome)
-  if (all(grepl("^chr", chr))) {
-    chr <- dplyr::case_when(
-      chr == "chrX" ~ "23", chr == "chrY" ~ "24", TRUE ~ sub("^chr", "", chr)
-    )
-  } else {
-    chr <- dplyr::case_when(chr == "X" ~ "23", chr == "Y" ~ "24", TRUE ~ chr)
-  }
+  # Element-wise (not all-or-nothing) so one stray contig can't derail the
+  # mapping of every other target: strip any "chr" prefix, X -> 23, Y -> 24.
+  chr <- sub("^chr", "", as.character(counts$chromosome), ignore.case = TRUE)
+  chr <- dplyr::case_when(chr == "X" ~ "23", chr == "Y" ~ "24", TRUE ~ chr)
   counts$chromosome <- suppressWarnings(as.integer(chr))
   unmapped <- is.na(counts$chromosome)
   if (any(unmapped)) {
@@ -217,7 +224,11 @@ call_cnvs <- function(
   )
   counts$mean <- as.numeric(counts$mean)
 
-  keep <- counts$mean >= 10 & is.finite(counts$mean) & counts[[sample_name]] >= 5
+  low_count <- is.finite(counts$mean) & counts$mean >= 10 &
+    counts[[sample_name]] < min_sample_count
+  low_coverage_runs <- .low_coverage_runs(counts, low_count, min_run = 3L)
+  n_low_count_dropped <- sum(low_count)
+  keep <- counts$mean >= 10 & is.finite(counts$mean) & counts[[sample_name]] >= min_sample_count
   counts <- counts[keep, , drop = FALSE]
   if (nrow(counts) < 2)
     stop("At least 2 valid targets are required after coverage filtering for ",
@@ -254,6 +265,12 @@ call_cnvs <- function(
 
   cnvs <- print_cnvs(sample_name, viterbi_df, counts, reference_samples)
 
+  genotyped <- nrow(cnvs) <= max_genotype
+  if (nrow(cnvs) > max_genotype) {
+    warning(sprintf(
+      "%s: %d CNVs called (> max_genotype = %d); genotyping skipped, Q_SOME is NA and every call is scored LOW. The sample is probably too noisy to call reliably.",
+      sample_name, nrow(cnvs), max_genotype), call. = FALSE)
+  }
   if (nrow(cnvs) > 0 && nrow(cnvs) <= max_genotype) {
     if (engine == "legacy_canoes") {
       fwd_m <- legacy_forward_matrix(em_probs, distances, p, Tnum, D)
@@ -296,6 +313,11 @@ call_cnvs <- function(
       test_counts = test_counts,
       ref_matrix = as.matrix(ref_data),
       sample_weights = sample_weights,
+      ref_cor = stats::setNames(as.numeric(cors[reference_samples]), reference_samples),
+      n_targets_used = nrow(counts),
+      n_low_count_dropped = n_low_count_dropped,
+      low_coverage_runs = low_coverage_runs,
+      genotyped = genotyped,
       emission_probs = em_probs,
       distances = distances,
       engine = engine
@@ -419,6 +441,64 @@ genotype_cnvs <- function(
 }
 
 
+#' Typed, zero-row CNV call table
+#'
+#' Same columns as the calls \code{run_canope()} returns, so downstream code
+#' (CSV, report, VCF) works unchanged when nothing was called.
+#' @param scored Include the \code{Confidence} / \code{CN_label} columns.
+#' @noRd
+.empty_cnv_calls <- function(scored = TRUE) {
+  df <- data.frame(
+    SAMPLE = character(0), CNV = character(0), INTERVAL = character(0),
+    KB = numeric(0), CHR = character(0), MID_BP = numeric(0),
+    TARGETS = character(0), NUM_TARG = integer(0), GENE = character(0),
+    MLCN = integer(0), Q_SOME = integer(0),
+    NUM_REFS = integer(0), REF_SAMPLES = character(0),
+    stringsAsFactors = FALSE
+  )
+  if (scored) { df$Confidence <- character(0); df$CN_label <- character(0) }
+  df
+}
+
+
+#' Runs of Consecutive Near-Zero-Coverage Targets in the Test Sample
+#'
+#' Targets the reference panel covers well (mean >= 10) but where the test
+#' sample has (almost) no reads are removed before HMM calling. A run of
+#' several such targets in a row looks like a homozygous deletion (or a capture
+#' dropout) that the HMM can therefore not call; this lists those runs so they
+#' can be reviewed instead of silently disappearing.
+#'
+#' @param counts Sorted counts table (numeric \code{chromosome}, \code{start},
+#'   \code{end}, \code{GENE}).
+#' @param low Logical vector (one per row) marking the dropped targets.
+#' @param min_run Minimum number of consecutive targets to report.
+#' @return Data frame: CHR, START, END, NUM_TARG, GENE (zero rows if none).
+#' @noRd
+.low_coverage_runs <- function(counts, low, min_run = 3L) {
+  empty <- data.frame(CHR = character(0), START = numeric(0), END = numeric(0),
+                      NUM_TARG = integer(0), GENE = character(0), stringsAsFactors = FALSE)
+  idx <- which(low)
+  if (length(idx) < min_run) return(empty)
+  brk <- c(TRUE, diff(idx) != 1L | counts$chromosome[idx][-1L] != counts$chromosome[idx][-length(idx)])
+  grp <- cumsum(brk)
+  out <- lapply(split(idx, grp), function(ii) {
+    if (length(ii) < min_run) return(NULL)
+    genes <- if ("GENE" %in% colnames(counts)) unique(as.character(counts$GENE[ii])) else NA_character_
+    genes <- genes[!is.na(genes) & genes != "." & genes != "NA"]
+    data.frame(CHR = format_chr_label(counts$chromosome[ii[1L]]),
+               START = min(counts$start[ii]), END = max(counts$end[ii]),
+               NUM_TARG = length(ii),
+               GENE = if (length(genes)) paste(genes, collapse = ";") else NA_character_,
+               stringsAsFactors = FALSE)
+  })
+  out <- Filter(Negate(is.null), out)
+  if (!length(out)) return(empty)
+  res <- do.call(rbind, out); rownames(res) <- NULL
+  res
+}
+
+
 #' Summarise a Run of Same-State Targets into One CNV Record
 #' @noRd
 summarize_cnvs <- function(cnv_targets, counts, sample_name, state) {
@@ -509,13 +589,13 @@ print_cnvs <- function(test_sample_name, viterbi_df, nonzero_counts, reference_s
     TARGETS = cnvs_df$cnv_targets,
     NUM_TARG = cnvs_df$num_targets,
     GENE = if ("cnv_gene" %in% colnames(cnvs_df)) cnvs_df$cnv_gene else NA_character_,
-    MLCN = 0L,
+    MLCN = NA_integer_,
     Q_SOME = NA_integer_,
     NUM_REFS = length(reference_samples),
     REF_SAMPLES = paste(reference_samples, collapse = ";"),
     stringsAsFactors = FALSE
   )
-  cat(nrow(xcnv), "CNVs called in sample", test_sample_name, "\n")
+  message(sprintf("%d CNV(s) called in sample %s", nrow(xcnv), test_sample_name))
   xcnv
 }
 

@@ -12,6 +12,18 @@
 #' @param min_cov      Minimum median read depth per sample / exon. Default 100.
 #' @param min_total_reads Minimum total reads per sample. Default 300 000.
 #' @param max_exon_cv  Maximum allowed coefficient of variation (CV) per exon. Default 0.5.
+#' @param all_chromosomes Optional character vector of every chromosome present
+#'   in the input BED / count table \emph{before} \code{modechrom} filtering.
+#'   When supplied, a chromosome that is in the BED but was left out of the
+#'   analysis (by \code{modechrom}/\code{removeY}) is reported as
+#'   \code{"Chromosome not analysed"}, instead of being wrongly reported as
+#'   missing from the BED. When \code{NULL} the chromosomes of \code{bed_df}
+#'   are used (legacy behaviour).
+#' @param modechrom,removeY The \code{run_canope()} chromosome settings, used
+#'   to explain why a chromosome class was not analysed.
+#' @param excluded_samples Optional data frame (\code{sample}, \code{reason}) of
+#'   samples removed before calling (e.g. noisy outliers); they are listed as
+#'   whole-sample flags so they do not silently vanish from the QC table.
 #'
 #' @return Invisibly returns the metrics data frame.
 #' @export
@@ -22,7 +34,11 @@ run_canope_qc_metrics <- function(counts,
                                    min_corr         = 0.98,
                                    min_cov          = 100,
                                    min_total_reads  = 300000,
-                                   max_exon_cv      = 0.5) {
+                                   max_exon_cv      = 0.5,
+                                   all_chromosomes  = NULL,
+                                   modechrom        = "A",
+                                   removeY          = TRUE,
+                                   excluded_samples = NULL) {
   message("[INFO] BEGIN CANOPE QC Metrics")
 
   gene_col  <- intersect(c("GENE", "gene", "Gene"), names(bed_df))[1]
@@ -47,9 +63,11 @@ run_canope_qc_metrics <- function(counts,
   } else {
     corr_matrix <- stats::cor(dt_counts, method = "spearman",
                               use = "pairwise.complete.obs")
+    # Exclude the diagonal by position, not by value: filtering on "!= 1" would
+    # also hide a second sample that correlates perfectly (a duplicate).
+    diag(corr_matrix) <- NA_real_
     max_corr <- apply(corr_matrix, 1, function(x) {
-      others <- x[x != 1]
-      if (!length(others)) NA_real_ else max(others, na.rm = TRUE)
+      if (all(is.na(x))) NA_real_ else max(x, na.rm = TRUE)
     })
     names(max_corr) <- colnames(corr_matrix)
   }
@@ -65,6 +83,12 @@ run_canope_qc_metrics <- function(counts,
     m$Details <<- c(m$Details, details)
     m$Gene    <<- c(m$Gene,    genes)
   }
+
+  if (!is.null(excluded_samples) && nrow(excluded_samples) > 0)
+    add_metric(as.character(excluded_samples$sample), rep("All", nrow(excluded_samples)),
+               "Whole sample",
+               paste("Excluded from analysis:", excluded_samples$reason),
+               rep("All", nrow(excluded_samples)))
 
   low_corr <- which(!is.na(max_corr) & max_corr < min_corr)
   if (length(low_corr))
@@ -114,15 +138,22 @@ run_canope_qc_metrics <- function(counts,
                gene_vals[high_cv])
   }
 
-  has_chrX <- any(grepl("^(chr)?X$", chrom_vals, ignore.case = TRUE))
-  has_chrY <- any(grepl("^(chr)?Y$", chrom_vals, ignore.case = TRUE))
-  if (!has_chrX) {
-    message("[WARNING] chrX not found in BED/counts – skipping X-chromosome calls.")
-    add_metric("All", "All", "Missing Chromosome", "chrX not present in BED", "All")
-  }
-  if (!has_chrY) {
-    message("[WARNING] chrY not found in BED/counts – skipping Y-chromosome calls.")
-    add_metric("All", "All", "Missing Chromosome", "chrY not present in BED", "All")
+  input_chr <- if (!is.null(all_chromosomes)) as.character(all_chromosomes) else as.character(chrom_vals)
+  cs <- canope_chromosome_status(input_chr, as.character(chrom_vals),
+                                 modechrom = modechrom, removeY = removeY)
+  for (k in seq_len(nrow(cs$status))) {
+    st <- cs$status[k, ]
+    if (!st$in_input) {
+      # Only the sex chromosomes were ever reported as missing; keep that
+      # (an autosome-free BED is reported too, as it makes the run meaningless).
+      message("[WARNING] ", st$label, " not found in BED/counts - ", st$label, " CNVs cannot be called.")
+      add_metric("All", "All", "Missing Chromosome",
+                 sprintf("%s not present in BED", st$label), "All")
+    } else if (!st$analysed) {
+      message("[WARNING] ", st$label, " present in the BED but not analysed: ", st$reason)
+      add_metric("All", "All", "Chromosome not analysed",
+                 sprintf("%s present in BED but not analysed: %s", st$label, st$reason), "All")
+    }
   }
 
   final_metrics <- data.frame(m, stringsAsFactors = FALSE)

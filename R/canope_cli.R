@@ -53,19 +53,36 @@ canope <- function(config_path = "config.yaml", ...) {
     settings <- cfg
   }
 
+  # Look a key up in settings / input / output / top level, in that order, so
+  # both the nested layout (README) and the flat layout (inst/config.yaml) work
+  # for every option -- e.g. `fasta_file` under `settings:` used to be ignored.
+  pick <- function(...) {
+    for (nm in c(...)) for (src in list(settings, input, output, cfg)) {
+      if (is.list(src) && !is.null(src[[nm]])) return(src[[nm]])
+    }
+    NULL
+  }
+
   args <- list()
 
-  args$fasta_file <- input$fasta %||% cfg$fasta_file
-  args$bed_file   <- input$bed   %||% cfg$bed_file
-  args$samples    <- input$bamdir %||% cfg$samples
+  args$fasta_file <- pick("fasta", "fasta_file")
+  args$bed_file   <- pick("bed", "bed_file")
+  args$samples    <- pick("bamdir", "samples")
+  args$bsgenome_pkg <- pick("bsgenome_pkg")
 
-  args$bsgenome_pkg <- settings$bsgenome_pkg %||% cfg$bsgenome_pkg %||% NULL
+  # Optional inputs (pre-computed counts / GC / reference panel / sample sheet)
+  for (key in c("reads_file", "gc_file", "refbams_file", "ref_reads", "sample_table",
+                "genome_build", "vcf_output", "report_output_dir"))
+    if (!is.null(v <- pick(key))) args[[key]] <- as.character(v)
 
   out_dir <- output$dir %||% cfg$output_dir %||% "."
   out_prefix <- output$prefix %||% cfg$output_prefix %||% "CANOPE"
-  args$output_file   <- file.path(out_dir, paste0("CANOPE_", out_prefix, "_CNVCall.csv"))
-  args$rdata_output  <- file.path(out_dir, paste0("CANOPE_", out_prefix, "_workspace.RData"))
-  args$output_prefix <- paste0("CANOPE_", out_prefix)  # <-- pass the full prefix to run_canope
+  # "CANOPE_<prefix>"; the default prefix "CANOPE" must not become CANOPE_CANOPE
+  base_prefix <- sub("^CANOPE_?", "", as.character(out_prefix))
+  full_prefix <- if (nzchar(base_prefix)) paste0("CANOPE_", base_prefix) else "CANOPE"
+  args$output_file   <- file.path(out_dir, paste0(full_prefix, "_CNVCall.csv"))
+  args$rdata_output  <- file.path(out_dir, paste0(full_prefix, "_workspace.RData"))
+  args$output_prefix <- full_prefix
 
   args$modechrom   <- settings$modechrom %||% cfg$modechrom %||% "A"
   args$min_cor     <- as.numeric(settings$min_cor %||% cfg$min_cor %||% 0.98)
@@ -81,6 +98,14 @@ canope <- function(config_path = "config.yaml", ...) {
   args$qc_min_cov          <- settings$qc_min_cov %||% cfg$qc_min_cov %||% 100
   args$qc_min_total_reads  <- settings$qc_min_total_reads %||% cfg$qc_min_total_reads %||% 300000L
   args$qc_max_exon_cv      <- settings$qc_max_exon_cv %||% cfg$qc_max_exon_cv %||% 0.5
+
+  # Extra run_canope() options that used to be settable only from R
+  if (!is.null(v <- pick("removeY")))             args$removeY <- as.logical(v)
+  if (!is.null(v <- pick("qc_zscore")))           args$qc_zscore <- as.numeric(v)
+  if (!is.null(v <- pick("exon_mad_quantile")))   args$exon_mad_quantile <- as.numeric(v)
+  if (!is.null(v <- pick("min_exon_mean")))       args$min_exon_mean <- as.numeric(v)
+  if (!is.null(v <- pick("min_sample_count")))    args$min_sample_count <- as.integer(v)
+  if (!is.null(v <- pick("gc_extreme_filter")))   args$gc_extreme_filter <- as.numeric(unlist(v))
 
   args$coverage_backend <- settings$coverage_backend %||% cfg$coverage_backend %||% "bioconductor"
   args$megadepth_op     <- settings$megadepth_op %||% cfg$megadepth_op %||% "sum"
@@ -123,8 +148,8 @@ canope <- function(config_path = "config.yaml", ...) {
   user_args <- list(...)
   args <- modifyList(args, user_args)
 
-  if (is.null(args$fasta_file) && is.null(args$bsgenome_pkg)) 
-    stop("Either fasta_file or bsgenome_pkg must be provided (with bed_file) for GC computation.")
+  if (is.null(args$fasta_file) && is.null(args$bsgenome_pkg) && is.null(args$gc_file))
+    stop("Either fasta_file or bsgenome_pkg (with bed_file), or a pre-computed gc_file, must be provided for GC computation.")
   if (is.null(args$samples))    stop("samples directory is required (input.bamdir in config)")
   if (is.null(args$bed_file))   stop("bed_file is required (input.bed in config)")
 

@@ -111,6 +111,11 @@ assign_exon_numbers_per_gene <- function(bed_df) {
   dt_unique[, .chrom_fac := NULL]
 
   dt_unique[, exon_number := seq_len(.N), by = "._gene"]
+  # Rows with no real gene (NA / "" / "." -- e.g. off-target filler intervals
+  # handled with off_target_handling = "na") must stay un-numbered, not be
+  # numbered 1..k as if "NA" were a gene.
+  no_gene_u <- is.na(dt_unique$`._gene`) | as.character(dt_unique$`._gene`) %in% c("", ".", "NA")
+  dt_unique[no_gene_u, exon_number := NA_integer_]
 
   dt[, exon_number := dt_unique$exon_number[match(`._key`, dt_unique$`._key`)]]
 
@@ -502,7 +507,7 @@ normalize_chromosome_vec <- function(chr_vec, ref_chromosomes) {
 #' @return Logical.
 #' @noRd
 bam_has_index <- function(bam) {
-  file.exists(paste0(bam, ".bai")) || file.exists(paste0(bam, ".bam.bai"))
+  file.exists(paste0(bam, ".bai")) || file.exists(sub("\\.bam$", ".bai", bam))
 }
 
 #' Parse a CANOPE INTERVAL string into components
@@ -563,20 +568,24 @@ plot_coverage_pca <- function(counts, sample_names,
   var_exp <- summary(pca)$importance[2, ] * 100
   pca_df  <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2],
                          Sample = sample_names, stringsAsFactors = FALSE)
+  use_groups <- !is.null(color_by) && length(color_by) == nrow(pca_df)
+  # The grouping column has to exist *before* ggplot() captures the data frame;
+  # adding it afterwards leaves the plot looking for a column that isn't there.
+  if (use_groups) pca_df$Group <- as.factor(ifelse(is.na(color_by), "NA", as.character(color_by)))
 
-  p <- ggplot2::ggplot(pca_df, ggplot2::aes(x = PC1, y = PC2, label = Sample))
+  p <- ggplot2::ggplot(pca_df, ggplot2::aes(x = PC1, y = PC2))
 
-  if (!is.null(color_by) && length(color_by) == nrow(pca_df)) {
-    pca_df$Group <- as.factor(color_by)
+  if (use_groups) {
     p <- p + ggplot2::aes(colour = Group)
-    if (length(unique(color_by)) >= 2)
-      p <- p + ggplot2::stat_ellipse(ggplot2::aes(colour = Group),
-                                      type = "norm", linetype = "dashed")
+    # stat_ellipse needs >= 3 points per group to be defined
+    if (any(table(pca_df$Group) >= 3L))
+      p <- p + suppressWarnings(ggplot2::stat_ellipse(type = "norm", linetype = "dashed"))
+    p <- p + ggplot2::geom_point(size = 3)
+  } else {
+    p <- p + ggplot2::geom_point(size = 3, colour = "steelblue")
   }
 
   p <- p +
-    ggplot2::geom_point(size = 3,
-                        colour = if (is.null(color_by)) "steelblue" else NULL) +
     ggplot2::labs(
       x     = paste0("PC1 (", round(var_exp[1], 1), "%)"),
       y     = paste0("PC2 (", round(var_exp[2], 1), "%)"),
@@ -589,9 +598,9 @@ plot_coverage_pca <- function(counts, sample_names,
     )
 
   if (requireNamespace("ggrepel", quietly = TRUE)) {
-    p <- p + ggrepel::geom_text_repel(size = 3, max.overlaps = 15)
+    p <- p + ggrepel::geom_text_repel(ggplot2::aes(label = Sample), size = 3, max.overlaps = 15)
   } else {
-    p <- p + ggplot2::geom_text(size = 3, hjust = -0.2, check_overlap = TRUE)
+    p <- p + ggplot2::geom_text(ggplot2::aes(label = Sample), size = 3, hjust = -0.2, check_overlap = TRUE)
   }
 
   if (!is.null(output_pdf)) {
@@ -645,4 +654,152 @@ check_background_calibration <- function(ratio, lo, hi, is_affected, min_n = 5) 
   flag <- n_bg >= min_n &&
     stats::pbinom(n_outside - 1L, size = n_bg, prob = 0.05, lower.tail = FALSE) < 0.05
   list(n_background = n_bg, n_outside = n_outside, pct_outside = pct_outside, flag = flag)
+}
+
+
+#' Classify chromosome labels as autosome / X / Y / MT / other
+#'
+#' @param chr Character vector of chromosome labels (with or without a
+#'   \code{chr} prefix; \code{23}/\code{24} are read as X/Y).
+#' @return Character vector of the same length: \code{"autosome"}, \code{"X"},
+#'   \code{"Y"}, \code{"MT"} or \code{"other"}.
+#' @export
+canope_chrom_class <- function(chr) {
+  s <- toupper(sub("^chr", "", as.character(chr), ignore.case = TRUE))
+  out <- rep("other", length(s))
+  out[s %in% as.character(1:22)] <- "autosome"
+  out[s %in% c("X", "23")] <- "X"
+  out[s %in% c("Y", "24")] <- "Y"
+  out[s %in% c("M", "MT")] <- "MT"
+  out[is.na(s)] <- NA_character_
+  out
+}
+
+
+#' Which chromosome classes were (not) analysed in a CANOPE run
+#'
+#' One run analyses a single \code{modechrom}: \code{"A"} (autosomes only),
+#' \code{"XX"} (chrX only) or \code{"XY"} (chrX + chrY). A run that covers only
+#' autosomes silently leaves the gonosomes un-analysed (and vice versa), which
+#' is easy to miss when reading the calls — this makes it explicit.
+#'
+#' @param input_chromosomes Chromosome labels present in the BED / count table
+#'   \emph{before} any \code{modechrom} filtering.
+#' @param analysed_chromosomes Chromosome labels of the targets that actually
+#'   reached the CNV caller.
+#' @param modechrom,removeY The run settings.
+#' @return A list with \code{status} (one row per class: autosome, X, Y with
+#'   \code{in_input}, \code{analysed}, \code{reason}), \code{messages}
+#'   (character vector of human-readable warnings) and
+#'   \code{autosomes_and_gonosomes} (\code{TRUE} only if autosomes and
+#'   chrX were both analysed).
+#' @export
+canope_chromosome_status <- function(input_chromosomes, analysed_chromosomes,
+                                     modechrom = "A", removeY = TRUE) {
+  cls_in  <- canope_chrom_class(input_chromosomes)
+  cls_ana <- canope_chrom_class(analysed_chromosomes)
+  classes <- c("autosome", "X", "Y")
+  label   <- c(autosome = "Autosomes", X = "chrX", Y = "chrY")
+  in_in   <- vapply(classes, function(k) any(cls_in  == k, na.rm = TRUE), logical(1))
+  in_ana  <- vapply(classes, function(k) any(cls_ana == k, na.rm = TRUE), logical(1))
+
+  reason <- setNames(rep("", 3L), classes)
+  for (k in classes) {
+    if (!in_in[[k]]) {
+      reason[[k]] <- "not present in the BED / count table"
+    } else if (!in_ana[[k]]) {
+      reason[[k]] <- if (k == "autosome" && modechrom != "A") {
+        sprintf("excluded by modechrom = '%s' (sex-chromosome mode)", modechrom)
+      } else if (k == "X" && modechrom == "A") {
+        "excluded by modechrom = 'A' (autosomes only)"
+      } else if (k == "Y" && modechrom == "A") {
+        "excluded by modechrom = 'A' (autosomes only)"
+      } else if (k == "Y" && modechrom == "XX") {
+        "excluded by modechrom = 'XX' (chrX only)"
+      } else if (k == "Y" && isTRUE(removeY)) {
+        "excluded by removeY = TRUE"
+      } else {
+        "all targets were removed by QC / coverage filters"
+      }
+    }
+  }
+
+  msgs <- character(0)
+  for (k in classes) {
+    if (!in_in[[k]]) {
+      msgs <- c(msgs, sprintf("%s: no targets in the BED / count table, so %s cannot be called.",
+                              label[[k]], if (k == "autosome") "autosomal CNVs" else paste0(label[[k]], " CNVs")))
+    } else if (!in_ana[[k]]) {
+      msgs <- c(msgs, sprintf("%s targets are present in the BED but were NOT analysed: %s.",
+                              if (k == "autosome") "Autosomal" else label[[k]], reason[[k]]))
+    }
+  }
+  if (in_in[["autosome"]] && !in_ana[["autosome"]] || (in_in[["X"]] && !in_ana[["X"]])) {
+    msgs <- c(msgs, sprintf(
+      "Autosomes and gonosomes were not both analysed in this run (modechrom = '%s'). Run again with %s to cover the rest; sex chromosomes need sex-matched references.",
+      modechrom, if (modechrom == "A") "modechrom = 'XX' (females) and/or 'XY' (males)" else "modechrom = 'A'"))
+  }
+
+  list(
+    status = data.frame(class = classes, label = unname(label[classes]),
+                        in_input = unname(in_in), analysed = unname(in_ana),
+                        reason = unname(reason), stringsAsFactors = FALSE),
+    messages = msgs,
+    autosomes_and_gonosomes = isTRUE(in_ana[["autosome"]] && in_ana[["X"]])
+  )
+}
+
+
+#' Infer each sample's sex from sex-chromosome coverage
+#'
+#' Heuristic on the depth of chrX (and chrY when present) relative to the
+#' autosomal median: a female has ~1x chrX and ~0x chrY, a male ~0.5x chrX and
+#' a clearly non-zero chrY. Only meant to flag an annotation / \code{modechrom}
+#' mismatch, not to replace a proper sex check.
+#'
+#' @param chrom_depth Numeric matrix, rows = chromosomes (named), columns =
+#'   samples: median target depth on the chromosome divided by the sample's
+#'   autosomal median.
+#' @param x_threshold chrX ratio below which a sample looks male. Default 0.75.
+#' @param y_threshold chrY ratio at/above which a sample looks male. Default 0.1.
+#' @return Data frame \code{sample, x_ratio, y_ratio, inferred_sex}
+#'   (\code{"F"}, \code{"M"} or \code{"unclear"}), or \code{NULL} when the
+#'   table has no chrX.
+#' @export
+canope_infer_sex <- function(chrom_depth, x_threshold = 0.75, y_threshold = 0.1) {
+  if (is.null(chrom_depth) || is.null(dim(chrom_depth))) return(NULL)
+  cls <- canope_chrom_class(rownames(chrom_depth))
+  if (!any(cls == "X", na.rm = TRUE)) return(NULL)
+  xr <- as.numeric(chrom_depth[which(cls == "X")[1L], ])
+  yr <- if (any(cls == "Y", na.rm = TRUE)) as.numeric(chrom_depth[which(cls == "Y")[1L], ]) else rep(NA_real_, length(xr))
+  male   <- !is.na(xr) & xr < x_threshold  & (is.na(yr) | yr >= y_threshold)
+  female <- !is.na(xr) & xr >= x_threshold & (is.na(yr) | yr <  y_threshold)
+  data.frame(sample = colnames(chrom_depth), x_ratio = xr, y_ratio = yr,
+             inferred_sex = ifelse(male, "M", ifelse(female, "F", "unclear")),
+             stringsAsFactors = FALSE)
+}
+
+
+#' Normalise a sex / gender annotation to "F" / "M"
+#' @param x Character vector (F, M, female, male, XX, XY ...).
+#' @return \code{"F"}, \code{"M"} or \code{NA}.
+#' @noRd
+.canope_norm_sex <- function(x) {
+  x <- toupper(trimws(as.character(x)))
+  ifelse(x %in% c("F", "FEMALE", "XX", "W"), "F",
+         ifelse(x %in% c("M", "MALE", "XY"), "M", NA_character_))
+}
+
+
+#' Guess the genome build label from a BSgenome package / FASTA name
+#' @param ... Character strings to inspect (BSgenome package, FASTA path,
+#'   \code{genome_version}).
+#' @return \code{"hg38"}, \code{"hg19"}, \code{"T2T-CHM13"} or \code{"unknown"}.
+#' @export
+canope_infer_genome_build <- function(...) {
+  x <- tolower(paste(unlist(list(...)), collapse = " "))
+  if (grepl("hg38|grch38|b38", x)) "hg38"
+  else if (grepl("hg19|grch37|b37", x)) "hg19"
+  else if (grepl("t2t|chm13", x)) "T2T-CHM13"
+  else "unknown"
 }

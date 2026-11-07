@@ -57,6 +57,22 @@ process_bed_file <- function(input_bed, output_bed, bed_process = "STANDARD",
                              off_target_handling = c("na", "remove", "merge"), ...) {
   off_target_handling <- match.arg(off_target_handling)
 
+  # Tokens that mean "no gene" when they appear as a gene symbol. Covers the
+  # usual R / spreadsheet exports, plus the chromosome-fallback labels some
+  # panel BEDs use for regions that could not be annotated (e.g. "chr2",
+  # "chr15"). All are treated as NA in parse_bed_name() and again during the
+  # final filtering of process_bed_file() so that the same rules hold whether
+  # the gene name comes from the input BED or from a panel BED.
+  .is_missing_gene <- function(x) {
+    if (length(x) == 0L) return(logical(0))
+    x_chr <- as.character(x)
+    is.na(x_chr) |
+      trimws(x_chr) == "" |
+      x_chr == "." |
+      toupper(trimws(x_chr)) %in% c("NA", "N/A", "NAN", "NULL", "NONE") |
+      grepl("^chr[0-9]+[XYM]?$", x_chr, ignore.case = TRUE)
+  }
+
   parse_bed_name <- function(name_vec, exon_sep = " ", gene_field_index = NULL,
                              gene_name_keep = NULL, auto_exon = TRUE, gene_name_collapse = " ") {
     if (is.null(exon_sep) || length(exon_sep) == 0 || any(exon_sep == "")) exon_sep <- " "
@@ -95,7 +111,10 @@ process_bed_file <- function(input_bed, output_bed, bed_process = "STANDARD",
 
     gene_names <- vapply(seq_along(parts_list), function(i) {
       g_orig <- as.character(name_vec[i])
-      if (is.na(g_orig) || g_orig == "" || g_orig == ".") return(NA_character_)
+      # Treat real NA, empty strings, "." and the string-NA /
+      # chromosome-fallback tokens as missing so that no downstream step
+      # tries to build a gene group out of "NA" or "chr2".
+      if (.is_missing_gene(g_orig)) return(NA_character_)
 
       parts <- parts_list[[i]]
       parts <- parts[parts != ""]
@@ -134,6 +153,7 @@ process_bed_file <- function(input_bed, output_bed, bed_process = "STANDARD",
       }
 
       if (!is.na(gene) && grepl("^[0-9]+$", gene) && length(parts) > 1) gene <- parts[1]
+      if (.is_missing_gene(gene)) return(NA_character_)
       return(gene)
     }, character(1))
 
@@ -382,20 +402,44 @@ process_bed_file <- function(input_bed, output_bed, bed_process = "STANDARD",
 
   df$Gene <- as.character(df$Gene)
   df$Gene <- vapply(strsplit(df$Gene, ",", fixed = TRUE), function(x) x[1], character(1))
-  keep_off_target <- if (".keep_off_target" %in% names(df)) df$.keep_off_target else rep(FALSE, nrow(df))
+
+  # -------- NEW: normalise string-NA / chromosome-fallback gene names ---------
+  missing_gene <- .is_missing_gene(df$Gene)
+  if (any(missing_gene)) {
+    message(sprintf(
+      "[INFO] process_bed_file: treating %d interval(s) with NA-/chromosome-like gene names as missing (dropped unless unknown_gene = TRUE or kept as off-target).",
+      sum(missing_gene)))
+    df$Gene[missing_gene] <- NA_character_
+  }
+  # ---------------------------------------------------------------------------
+
+  # `df$.keep_off_target` is always aligned with `df`. Use it directly so the
+  # mask survives the row-count changes of the filtering below.
+  has_off_target_col <- ".keep_off_target" %in% names(df)
+  keep_off_target <- if (has_off_target_col) df$.keep_off_target else rep(FALSE, nrow(df))
+
   if (!unknown_gene) {
     keep_gene <- !is.na(df$Gene) & df$Gene != "" & df$Gene != "."
+    n_dropped <- sum(!keep_gene & !keep_off_target)
+    if (n_dropped > 0) {
+      message(sprintf(
+        "[INFO] process_bed_file: dropped %d interval(s) with no valid gene annotation (set unknown_gene = TRUE to keep them as 'Unknown').",
+        n_dropped))
+    }
     df <- df[keep_gene | keep_off_target, , drop = FALSE]
   } else {
     missing_gene <- is.na(df$Gene) | df$Gene == ""
     df$Gene[missing_gene & !keep_off_target] <- "Unknown"
   }
-  if (any(keep_off_target)) {
+
+  # Blank exon numbers on kept-but-not-a-gene (off-target) rows. Use the
+  # column itself, so the mask length always matches nrow(df).
+  if (has_off_target_col && any(df$.keep_off_target)) {
     for (exon_col in intersect(c("ExonNum", "Custom.Exon"), names(df))) {
-      df[[exon_col]][keep_off_target] <- NA
+      df[[exon_col]][df$.keep_off_target] <- NA
     }
   }
-  df$.keep_off_target <- NULL
+  if (has_off_target_col) df$.keep_off_target <- NULL
   df <- unique(df)
 
   chrom_base <- c(as.character(1:22), "X", "Y", "M")

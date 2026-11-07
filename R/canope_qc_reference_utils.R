@@ -60,7 +60,8 @@ infer_reference_samples <- function(
 #'
 #' @param counts      Numeric matrix or data frame.
 #' @param pseudocount Numeric.
-#' @param z_threshold Numeric. Robust z-score above which a sample is an outlier.
+#' @param z_threshold Numeric. Robust z-score of the sample's noise (MAD of
+#'   log2 counts) above which a sample is flagged as a (noisy) outlier.
 #'
 #' @return Data frame: sample, noise_score, robust_z, is_outlier.
 #' @export
@@ -75,7 +76,10 @@ detect_outlier_samples <- function(counts, pseudocount = 0.5, z_threshold = 3) {
   z_scores  <- if (length(sample_noise) > 1L && is.finite(mad0) && mad0 > 0)
     (sample_noise - med) / mad0 else rep(0, length(sample_noise))
 
-  is_outlier <- abs(z_scores) > z_threshold
+  # One-sided: only unusually *noisy* samples are outliers. A sample that is
+  # much cleaner than the cohort (large negative z) is the best kind of
+  # reference and must not be excluded.
+  is_outlier <- z_scores > z_threshold
 
   data.frame(
     sample       = names(sample_noise),
@@ -95,7 +99,8 @@ detect_outlier_samples <- function(counts, pseudocount = 0.5, z_threshold = 3) {
 #'
 #' @param count_matrix Numeric matrix (targets × samples).
 #' @param chromosomes  Optional factor/character vector of chromosome labels.
-#' @param mad_quantile Numeric. Top quantile of exon MAD to flag.
+#' @param mad_quantile Numeric. Top quantile of exon MAD (computed on log2
+#'                     counts, so it is independent of depth) to flag.
 #' @param min_mean     Numeric. Minimum mean coverage to retain.
 #' @param gc           Optional numeric vector of GC content (0–1 or 0–100).
 #' @param gc_min       Numeric. Minimum GC fraction.
@@ -114,7 +119,10 @@ detect_problematic_exons <- function(
 ) {
   count_matrix <- as.matrix(count_matrix)
   exon_mean    <- rowMeans(count_matrix, na.rm = TRUE)
-  exon_mad     <- apply(count_matrix, 1, stats::mad, na.rm = TRUE)
+  # MAD on the log2 scale: a MAD of raw counts grows with depth, so a
+  # "top 10 % by MAD" cut would preferentially discard the best-covered (most
+  # informative) exons instead of the most erratic ones.
+  exon_mad     <- apply(log2(pmax(count_matrix, 0) + 1), 1, stats::mad, na.rm = TRUE)
   mad_thresh   <- stats::quantile(exon_mad, probs = mad_quantile, na.rm = TRUE)
 
   problematic  <- (exon_mad > mad_thresh | exon_mean < min_mean |
