@@ -298,35 +298,6 @@ If you request `decode_method = "stationary"` together with
 `engine = "legacy_canoes"`, you'll get a warning and it falls back to
 distance-based transitions — the original never had a stationary mode.
 
-## Code review: fixes and behaviour changes (0.2.0)
-
-**Results that change**
-
-* **Target order no longer matters.** Target ids are now assigned in genomic order. Previously a BED / count table sorted lexicographically (`chr1, chr10, ..., chr2`) or left unsorted got ids that did not follow genomic position, and since `TARGETS = a..b` is treated as a contiguous range by the HMM, the Q_SOME likelihoods and the plots, the same data gave different Q_SOME (and different plots) depending on row order.
-* **Exon numbers** are fixed before QC removes exons, so a label in a plot is the exon's real position in its gene.
-* **Noisy-sample test is one-sided.** Only samples that are unusually *noisy* are outliers; a sample far cleaner than the cohort is a good reference and is no longer excluded.
-* **Exon QC uses the MAD of log2 counts.** The MAD of raw counts grows with depth, so the "top 10 % by MAD" cut used to discard the best-covered exons rather than the most erratic ones.
-* **Confidence scoring:** MLCN `0` no longer counts as consistent for a DUP call, and a missing MLCN is never "consistent" (`CN_label` is `NA`).
-* **Unresolved copy number is `NA`, not `0`.** When genotyping was skipped (too many calls) the placeholder `MLCN = 0` stayed in the CSV and read as a homozygous deletion; the VCF in turn wrote a missing MLCN as `0/0` with CN=2. Both now say "unknown" (`NA` / `./.`).
-
-**Bugs fixed**
-
-* False "chrX / chrY not found in BED" QC rows when a chromosome was only left out by `modechrom` / `removeY`: it is now reported as *Chromosome not analysed*, with the reason.
-* PCA plot crashes (`Group` used before it existed; `colour = NULL`) when a `sample_table` was supplied.
-* GC alignment of a supplied `gc_file` was O(n^2) (hours on a whole exome); it is now a hash lookup, still coordinate-based, with a +1 start fallback for 0- vs 1-based tables.
-* Chromosome-to-number mapping is element-wise, so one stray contig no longer changes the mapping of every other target.
-* The best-correlation QC metric excludes the diagonal by position, so a perfectly correlated duplicate sample is no longer hidden.
-* Missing BAM indexes are reported up front with a clear message.
-* When nothing is called, the CSV (header only), the workspace and the report are still written (they were skipped, which is when the QC warnings matter most).
-* Genotyping skipped because of too many calls (`max_genotype`) is now warned about and flagged in the report instead of silently leaving every Q_SOME missing.
-* PDF plots: `modechrom = "XY"` includes chrY when it was analysed; only exons the HMM evaluated for the sample are drawn; a call's rows are selected by target-id range.
-* VCF: `INFO` fields (`CONFIDENCE`, `QSOME`, `NCOMP`, `REFS`) summarise all carrier samples instead of the first one, and a per-sample `FORMAT/CF` (confidence) field is added.
-* The YAML wrapper finds every option in both the flat and the nested layout (`fasta_file` under `settings:` used to be ignored); `reads_file`, `gc_file`, `sample_table`, `genome_build`, `removeY`, `qc_zscore`, `exon_mad_quantile`, `min_exon_mean`, `min_sample_count`, `gc_extreme_filter` and `report_output_dir` can be set from the config; the default prefix no longer becomes `CANOPE_CANOPE`.
-
-**`min_sample_count` (default `5`, now configurable)**
-
-Before the HMM, targets where the sample being called has fewer reads than `min_sample_count` are dropped as capture dropout. This also hides a *homozygous* deletion (its exons read ~0). Such runs (>= 3 consecutive targets) are now listed in the workspace (`run_info$low_coverage_runs`) and flagged in the report. Set `min_sample_count: 0` to keep every target and let `homdel_mean` model homozygous deletions (more sensitive, but dropouts may then be called).
-
 **Tests:** `devtools::test()` runs unit tests (chromosome status, sex inference, GC alignment, exon numbering, calibration) and a small end-to-end run on synthetic data (spiked DEL / DUP found, calls identical for different row orders, report built, "autosomes and gonosomes not both analysed" warning present).
 
 ## License

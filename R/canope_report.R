@@ -433,9 +433,9 @@ button.btn.small-btn { padding: 1px 9px; font-size: 12px; margin-left: 6px; }
   // meaning-bearing colours (always paired with a symbol / text, never colour alone)
   var SEM = {
     light: { DEL: '#e34948', DUP: '#2a78d6', HIGH: '#1baf7a', MEDIUM: '#eda100', LOW: '#898781', NA: '#c3c2b7',
-             fail: '#d13b3a', warn: '#e09a00', ok: '#1baf7a', info: '#2a78d6', ref: '#c3c2b7', flank: '#898781' },
+             fail: '#d13b3a', warn: '#e09a00', ok: '#1baf7a', info: '#2a78d6', test: '#2a78d6', ref: '#c3c2b7', flank: '#898781' },
     dark: { DEL: '#e66767', DUP: '#3987e5', HIGH: '#199e70', MEDIUM: '#c98500', LOW: '#898781', NA: '#555552',
-            fail: '#e66767', warn: '#c98500', ok: '#199e70', info: '#3987e5', ref: '#4a4a46', flank: '#898781' }
+            fail: '#e66767', warn: '#c98500', ok: '#199e70', info: '#3987e5', test: '#3987e5', ref: '#4a4a46', flank: '#898781' }
   };
   var SEQ = ['#cde2fb', '#9ec5f4', '#6da7ec', '#3987e5', '#256abf', '#184f95', '#0d366b'];
   var DIV = ['#e34948', '#f0a3a2', '#f0efec', '#9ec5f4', '#2a78d6'];
@@ -1364,24 +1364,30 @@ button.btn.small-btn { padding: 1px 9px; font-size: 12px; margin-left: 6px; }
     var txt = range(n).map(function (k) {
       return '<b>' + (asArray(P.gene)[k] || '') + '</b> exon ' + asArray(P.exon)[k] + (aff[k] ? ' (called)' : '') + '<br>' + asArray(P.pos)[k];
     });
-    var lines = function (mats) {
+    // Concatenate one x/y pair per reference sample into a single trace (null
+    // separators are skipped by plotly in markers mode).
+    var series = function (mats) {
       var X = [], Y = [];
       mats.forEach(function (m) { for (var k = 0; k < n; k++) { X.push(px[k]); Y.push(m[k]); } X.push(null); Y.push(null); });
       return { x: X, y: Y };
     };
     var testLog = asArray(P.test_log), ratio = asArray(P.ratio), lo = asArray(P.lo), hi = asArray(P.hi), z = asArray(P.z);
-    var markerCol = range(n).map(function (k) { return aff[k] ? tc : c.flank; });
+    // Points are never joined by lines, in every panel -- same convention as
+    // the static PDF plots (generate_plots): exons are ordered genomic
+    // positions, and a connecting line would suggest a continuous signal
+    // between them (and run straight across the inserted gene gaps).
+    var markerCol = range(n).map(function (k) { return aff[k] ? tc : c.test; });
     var markerSym = range(n).map(function (k) { return aff[k] ? (type === 'DEL' ? 'triangle-down' : 'triangle-up') : 'circle'; });
     var markerSize = range(n).map(function (k) { return aff[k] ? 11 : 7; });
     var data = [];
     var nref = refLog.length;
     if (showRefs && nref) {
-      var rl = lines(refLog), rz = lines(refZ);
-      data.push({ type: 'scatter', mode: 'lines', name: 'Reference samples (' + nref + ')', x: rl.x, y: rl.y, xaxis: 'x', yaxis: 'y', line: { color: c.ref, width: 1 }, hoverinfo: 'skip', legendgroup: 'refs', connectgaps: false });
-      data.push({ type: 'scatter', mode: 'lines', name: 'refs z', x: rz.x, y: rz.y, xaxis: 'x', yaxis: 'y3', line: { color: c.ref, width: 1 }, hoverinfo: 'skip', legendgroup: 'refs', showlegend: false, connectgaps: false });
+      var rl = series(refLog), rz = series(refZ);
+      data.push({ type: 'scatter', mode: 'markers', name: 'Reference samples (' + nref + ')', x: rl.x, y: rl.y, xaxis: 'x', yaxis: 'y', marker: { color: c.ref, size: 4, opacity: 0.75 }, hoverinfo: 'skip', legendgroup: 'refs' });
+      data.push({ type: 'scatter', mode: 'markers', name: 'refs z', x: rz.x, y: rz.y, xaxis: 'x', yaxis: 'y3', marker: { color: c.ref, size: 4, opacity: 0.75 }, hoverinfo: 'skip', legendgroup: 'refs', showlegend: false });
     }
-    data.push({ type: 'scatter', mode: 'lines+markers', name: 'Test sample ' + P.sample, x: px, y: testLog, xaxis: 'x', yaxis: 'y', text: txt,
-      line: { color: CHROME[t].text, width: 1.5 }, marker: { color: markerCol, symbol: markerSym, size: markerSize, line: { width: 1, color: CHROME[t].surface } },
+    data.push({ type: 'scatter', mode: 'markers', name: 'Test sample ' + P.sample, x: px, y: testLog, xaxis: 'x', yaxis: 'y', text: txt,
+      marker: { color: markerCol, symbol: markerSym, size: markerSize, line: { width: 1, color: CHROME[t].surface } },
       hovertemplate: '%{text}<br>log2(count + 0.5) = %{y:.2f}<extra></extra>' });
     var errUp = range(n).map(function (k) { return isNum(hi[k]) && isNum(ratio[k]) ? Math.max(0, hi[k] - ratio[k]) : 0; });
     var errDn = range(n).map(function (k) { return isNum(lo[k]) && isNum(ratio[k]) ? Math.max(0, ratio[k] - lo[k]) : 0; });
@@ -1391,8 +1397,8 @@ button.btn.small-btn { padding: 1px 9px; font-size: 12px; margin-left: 6px; }
       error_y: { type: 'data', symmetric: false, array: errUp, arrayminus: errDn, color: c.flank, thickness: 1, width: 3 },
       marker: { color: markerCol, symbol: markerSym, size: markerSize, line: { width: 1, color: CHROME[t].surface } },
       hovertemplate: '%{text}<br>log2(obs/exp) = %{y:.2f}<br>%{customdata}<extra></extra>' });
-    data.push({ type: 'scatter', mode: 'lines+markers', name: 'z', x: px, y: z, xaxis: 'x', yaxis: 'y3', showlegend: false, text: txt,
-      line: { color: CHROME[t].text, width: 1.5 }, marker: { color: markerCol, symbol: markerSym, size: markerSize, line: { width: 1, color: CHROME[t].surface } },
+    data.push({ type: 'scatter', mode: 'markers', name: 'z', x: px, y: z, xaxis: 'x', yaxis: 'y3', showlegend: false, text: txt,
+      marker: { color: markerCol, symbol: markerSym, size: markerSize, line: { width: 1, color: CHROME[t].surface } },
       hovertemplate: '%{text}<br>z = %{y:.2f}<extra></extra>' });
     // legend entry for the called exons
     data.push({ type: 'scatter', mode: 'markers', name: 'Called exons (' + type + ')', x: [null], y: [null], xaxis: 'x', yaxis: 'y',
