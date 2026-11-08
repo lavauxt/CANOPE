@@ -569,15 +569,13 @@ plot_coverage_pca <- function(counts, sample_names,
   pca_df  <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 2],
                          Sample = sample_names, stringsAsFactors = FALSE)
   use_groups <- !is.null(color_by) && length(color_by) == nrow(pca_df)
-  # The grouping column has to exist *before* ggplot() captures the data frame;
-  # adding it afterwards leaves the plot looking for a column that isn't there.
+
   if (use_groups) pca_df$Group <- as.factor(ifelse(is.na(color_by), "NA", as.character(color_by)))
 
   p <- ggplot2::ggplot(pca_df, ggplot2::aes(x = PC1, y = PC2))
 
   if (use_groups) {
     p <- p + ggplot2::aes(colour = Group)
-    # stat_ellipse needs >= 3 points per group to be defined
     if (any(table(pca_df$Group) >= 3L))
       p <- p + suppressWarnings(ggplot2::stat_ellipse(type = "norm", linetype = "dashed"))
     p <- p + ggplot2::geom_point(size = 3)
@@ -804,22 +802,19 @@ canope_infer_genome_build <- function(...) {
   else "unknown"
 }
 
-#' Export CANOPE CNV calls to VCF
+#' Export CANOPE CNV calls to VCF (plain-text writer)
 #'
-#' Converts a CANOPE CNV-call data frame (as returned by \code{\link{run_canope}}
-#' and optionally annotated by \code{\link{score_canope_confidence}}) into a
-#' standard VCF file.  When \code{sample_name} is \code{NULL}, a single
-#' multi-sample VCF is written; otherwise a single-sample VCF is produced.
+#' Converts a CANOPE CNV-call data frame into a standard VCF 4.2 file, written
+#' directly as text (no external package is required). When
+#' \code{sample_name} is \code{NULL}, a multi-sample VCF is written; otherwise
+#' a single-sample VCF.
 #'
-#' @param cnv_calls   Data frame of CANOPE CNV calls (the \code{xcnv}-style
-#'   table produced by \code{print_cnvs()} / \code{run_canope()}).
+#' @param cnv_calls   Data frame of CANOPE CNV calls.
 #' @param output_vcf  Output VCF file path.
-#' @param sample_name Optional character string. If supplied, write a
-#'   single-sample VCF for that sample only.
-#' @param source      Source description for the VCF header. Default \code{"CANOPE"}.
-#' @param reference   Reference genome assembly label (e.g. \code{"hg19"}).
-#'
-#' @return Invisibly returns the path written.
+#' @param sample_name Optional single sample name.
+#' @param source      Source description for the VCF header.
+#' @param reference   Reference genome assembly label.
+#' @return Invisibly returns the path written (or NULL if nothing to write).
 #' @export
 export_canope_to_vcf <- function(cnv_calls, output_vcf, sample_name = NULL,
                                  source = "CANOPE", reference = "hg19") {
@@ -847,7 +842,7 @@ export_canope_to_vcf <- function(cnv_calls, output_vcf, sample_name = NULL,
   }
   samples <- sort(unique(as.character(cnv_calls$SAMPLE)))
 
-  header <- c(
+  meta <- c(
     "##fileformat=VCFv4.2",
     paste0("##fileDate=", format(Sys.Date(), "%Y%m%d")),
     paste0("##source=", source),
@@ -857,7 +852,7 @@ export_canope_to_vcf <- function(cnv_calls, output_vcf, sample_name = NULL,
     '##INFO=<ID=END,Number=1,Type=Integer,Description="End position of the variant described in this record">',
     '##INFO=<ID=CONFIDENCE,Number=1,Type=String,Description="Best confidence level (HIGH/MEDIUM/LOW) among the carrier samples; see FORMAT/CF per sample">',
     '##INFO=<ID=NUMTARG,Number=1,Type=Integer,Description="Number of targets (exons) spanned">',
-    '##INFO=<ID=REFS,Number=.,Type=String,Description="Reference samples used (comma-separated); only written when a single sample carries the call, otherwise they differ per sample">',
+    '##INFO=<ID=REFS,Number=.,Type=String,Description="Reference samples used (comma-separated); only written when a single sample carries the call">',
     '##INFO=<ID=NCOMP,Number=1,Type=Integer,Description="Largest number of reference samples among the carrier samples">',
     '##INFO=<ID=QSOME,Number=1,Type=Integer,Description="Highest phred-scaled probability some CNV exists in this interval (SQ) among the carrier samples; see FORMAT/QS per sample">',
     '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">',
@@ -865,9 +860,7 @@ export_canope_to_vcf <- function(cnv_calls, output_vcf, sample_name = NULL,
     '##FORMAT=<ID=QS,Number=1,Type=Integer,Description="Per-sample Q_SOME phred score">',
     '##FORMAT=<ID=CF,Number=1,Type=String,Description="Per-sample confidence level (HIGH/MEDIUM/LOW)">',
     '##ALT=<ID=DUP,Description="Duplication">',
-    '##ALT=<ID=DEL,Description="Deletion">',
-    paste0("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t",
-           paste(samples, collapse = "\t"))
+    '##ALT=<ID=DEL,Description="Deletion">'
   )
 
   key_df <- unique(data.frame(
@@ -880,7 +873,7 @@ export_canope_to_vcf <- function(cnv_calls, output_vcf, sample_name = NULL,
 
   chrom_order <- function(chr) {
     stripped <- sub("^chr", "", chr)
-    num      <- suppressWarnings(as.integer(stripped))
+    num <- suppressWarnings(as.integer(stripped))
     ifelse(is.na(num), Inf, num)
   }
   key_df <- key_df[order(chrom_order(key_df$Chromosome),
@@ -890,22 +883,31 @@ export_canope_to_vcf <- function(cnv_calls, output_vcf, sample_name = NULL,
   make_sample_field <- function(row_df) {
     if (nrow(row_df) == 0) return("0/0:2:.:.")
     mlcn <- suppressWarnings(as.integer(row_df$MLCN[1]))
-    qs <- suppressWarnings(as.integer(row_df$Q_SOME[1]))
+    qs   <- suppressWarnings(as.integer(row_df$Q_SOME[1]))
     qs_str <- if (is.na(qs)) "." else as.character(qs)
     cf <- if ("Confidence" %in% colnames(row_df)) safe_char(row_df$Confidence[1]) else "."
-    # An unknown copy number must not be written as a normal (CN=2, 0/0) call.
     if (is.na(mlcn)) return(paste0("./.:.:", qs_str, ":", cf))
     gt <- if (mlcn == 0L) "1/1" else if (mlcn < 2L) "0/1" else if (mlcn > 2L) "0/1" else "0/0"
     paste0(gt, ":", mlcn, ":", qs_str, ":", cf)
   }
 
-  records <- character(nrow(key_df))
-  for (i in seq_len(nrow(key_df))) {
-    key_row  <- key_df[i, ]
-    chrom    <- as.character(key_row[["Chromosome"]])
-    start    <- as.integer(key_row[["Start"]])
-    end      <- as.integer(key_row[["End"]])
-    cnv_type <- toupper(as.character(key_row[["Type"]]))
+  n_recs <- nrow(key_df)
+  n_samp <- length(samples)
+
+  chrom_vec <- character(n_recs)
+  pos_vec   <- integer(n_recs)
+  id_vec    <- character(n_recs)
+  alt_vec   <- character(n_recs)
+  info_vec  <- character(n_recs)
+  sample_mat <- matrix("", nrow = n_recs, ncol = n_samp,
+                       dimnames = list(NULL, samples))
+
+  for (i in seq_len(n_recs)) {
+    key_row  <- key_df[i, , drop = FALSE]
+    chrom    <- as.character(key_row$Chromosome)
+    start    <- as.integer(key_row$Start)
+    end      <- as.integer(key_row$End)
+    cnv_type <- toupper(as.character(key_row$Type))
     is_dup   <- cnv_type == "DUP"
     alt      <- if (is_dup) "<DUP>" else "<DEL>"
     sv_type  <- if (is_dup) "DUP" else "DEL"
@@ -913,29 +915,28 @@ export_canope_to_vcf <- function(cnv_calls, output_vcf, sample_name = NULL,
 
     row_hits <- cnv_calls[
       as.character(cnv_calls$CHR) == chrom &
-      as.integer(cnv_calls$Start) == start &
-      as.integer(cnv_calls$End)   == end   &
-      toupper(as.character(cnv_calls$CNV)) == cnv_type, , drop = FALSE]
+        as.integer(cnv_calls$Start) == start &
+        as.integer(cnv_calls$End)   == end   &
+        toupper(as.character(cnv_calls$CNV)) == cnv_type, , drop = FALSE]
     representative <- row_hits[1, , drop = FALSE]
 
     id <- paste0(gsub("^chr", "", chrom), "_", start, "_", end, "_", sv_type)
 
-    info_items <- c(
-      paste0("SVTYPE=", sv_type),
-      paste0("SVLEN=", sv_len),
-      paste0("END=", end)
-    )
+    info_items <- c(paste0("SVTYPE=", sv_type),
+                    paste0("SVLEN=", sv_len),
+                    paste0("END=", end))
 
-    # Cohort-level INFO fields summarise *all* carriers of this exact call
-    # (previously they were read from the first carrier only).
     if ("Confidence" %in% colnames(row_hits)) {
       rank <- c(HIGH = 3L, MEDIUM = 2L, LOW = 1L)
       cf_all <- toupper(as.character(row_hits$Confidence))
       cf_all <- cf_all[cf_all %in% names(rank)]
+      # Pick the name at the position of the highest rank value. The previous
+      # names(rank)[max(rank[cf_all])] indexed the names BY the rank value,
+      # so a best-HIGH call was reported as CONFIDENCE=LOW (and best-LOW as
+      # CONFIDENCE=HIGH) whenever HIGH=3 / MEDIUM=2 / LOW=1.
       if (length(cf_all) > 0)
-        info_items <- c(info_items, paste0("CONFIDENCE=", names(rank)[max(rank[cf_all])]))
+        info_items <- c(info_items, paste0("CONFIDENCE=", cf_all[which.max(rank[cf_all])]))
     }
-
     if ("NUM_TARG" %in% colnames(representative)) {
       nt <- safe_char(representative$NUM_TARG)
       if (nt != ".") info_items <- c(info_items, paste0("NUMTARG=", nt))
@@ -956,24 +957,45 @@ export_canope_to_vcf <- function(cnv_calls, output_vcf, sample_name = NULL,
       if (is.finite(qm)) info_items <- c(info_items, paste0("QSOME=", qm))
     }
 
-    format_field  <- "GT:CN:QS:CF"
-    sample_fields <- vapply(samples, function(s) {
-      sample_row <- row_hits[row_hits$SAMPLE == s, , drop = FALSE]
-      make_sample_field(sample_row)
-    }, character(1))
+    chrom_vec[i] <- chrom
+    pos_vec[i]   <- start
+    id_vec[i]    <- id
+    alt_vec[i]   <- alt
+    info_vec[i]  <- paste(info_items, collapse = ";")
 
-    records[i] <- paste(chrom, start, id, "N", alt, ".", "PASS",
-                        paste(info_items, collapse = ";"),
-                        format_field,
-                        paste(sample_fields, collapse = "\t"),
-                        sep = "\t")
+    for (s in samples) {
+      sample_row <- row_hits[row_hits$SAMPLE == s, , drop = FALSE]
+      sample_mat[i, s] <- make_sample_field(sample_row)
+    }
   }
 
+  fix <- data.frame(
+    CHROM = chrom_vec, POS = pos_vec, ID = id_vec,
+    REF = rep("N", n_recs), ALT = alt_vec,
+    QUAL = rep(".", n_recs), FILTER = rep("PASS", n_recs),
+    INFO = info_vec, stringsAsFactors = FALSE
+  )
+  gt <- data.frame(FORMAT = rep("GT:CN:QS:CF", n_recs), stringsAsFactors = FALSE)
+  for (s in samples) gt[[s]] <- sample_mat[, s]
+
   dir.create(dirname(output_vcf), showWarnings = FALSE, recursive = TRUE)
-  con <- file(output_vcf, "w")
+
+  # vcfR has no exported constructor for building a vcfR object from scratch
+  # (new_vcf() does not exist in the package), so the records already assembled
+  # in fix/gt are written directly as plain VCF text: identical output, and no
+  # hard dependency on vcfR any more.
+  header_line <- paste(c("#CHROM", "POS", "ID", "REF", "ALT", "QUAL", "FILTER",
+                         "INFO", colnames(gt)), collapse = "\t")
+  body_lines <- apply(cbind(fix, gt), 1, paste, collapse = "\t")
+
+  # "wb" (not "wt") so lines always end in LF on every platform, as required
+  # by the VCF 4.2 spec ("wt" would emit CRLF on Windows).
+  con <- file(output_vcf, open = "wb")
   on.exit(close(con), add = TRUE)
-  writeLines(header,  con)
-  writeLines(records, con)
-  message("[INFO] Wrote ", length(records), " CNV records to ", output_vcf)
+  writeLines(meta, con, sep = "\n")
+  writeLines(header_line, con, sep = "\n")
+  writeLines(body_lines, con, sep = "\n")
+
+  message("[INFO] Wrote ", n_recs, " CNV records to ", output_vcf)
   invisible(output_vcf)
 }

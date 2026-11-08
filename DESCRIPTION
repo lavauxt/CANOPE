@@ -32,7 +32,8 @@ Imports:
     matrixStats,
     HMM,
     data.table,
-    jsonlite
+    jsonlite,
+    vcfR
 Suggests:
     GenomicFeatures,
     TxDb.Hsapiens.UCSC.hg19.knownGene,
