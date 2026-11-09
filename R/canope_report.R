@@ -201,9 +201,39 @@ canope_build_data <- function(env, qc_metrics_file, settings, sample_table, log_
   }
   sample_level <- vapply(flags, function(f) if (length(f)) level_of(f) else "ok", character(1))
 
+  analysed_samples <- run$samples_analysed %||% sample_cols
   st_chr <- vapply(requested, function(s) as.character(get_status(s, "status", if (s %in% sample_cols) "called" else "unknown")), character(1))
+  # A sample that was not analysed (excluded / failed) is a FAILURE, not a
+  # warning: the cohort severity filter and the Sample QC status tiles must
+  # treat excluded samples as failures, matching the ECHO report behaviour.
+  sample_level_norm <- vapply(seq_along(requested), function(i) {
+    s <- requested[i]
+    if (!(s %in% analysed_samples) && st_chr[i] %in% c("excluded", "failed", "unknown")) "fail" else sample_level[i]
+  }, character(1))
+  # Build a short reason tag for each not-analysed sample so the cohort
+  # snapshot, the sample table and the header alert can explain WHY the
+  # sample was excluded.  Priority: noise_z outlier > explicit log message >
+  # generic fallback.
+  reason_col <- vapply(seq_along(requested), function(i) {
+    s <- requested[i]
+    st <- st_chr[i]
+    if (s %in% analysed_samples) return("")
+    # noise_z outlier (the exact metric detect_outlier_samples uses)
+    if (!is.null(noise) && s %in% noise$sample) {
+      z <- noise$robust_z[match(s, noise$sample)]
+      if (!is.na(z) && abs(z) > thr$qc_zscore)
+        return(sprintf("Outlier: noise z = %.2f (> %g)", z, thr$qc_zscore))
+    }
+    msg <- get_status(s, "message", "")
+    if (identical(st, "excluded"))
+      return(paste0("Excluded before calling", if (nzchar(msg)) paste0(": ", msg) else ""))
+    if (identical(st, "failed"))
+      return(paste0("CNV calling failed", if (nzchar(msg)) paste0(": ", msg) else ""))
+    "Excluded from calling"
+  }, character(1))
   samples_df <- data.frame(
-    sample = requested, status = st_chr, level = unname(sample_level),
+    sample = requested, status = st_chr, level = sample_level_norm,
+    Analysed = ifelse(requested %in% analysed_samples, "Yes", "No"),
     n_cnvs = as.integer(call_counts),
     n_del = vapply(requested, function(s) n_by(s, cnv$CNV == "DEL"), numeric(1)),
     n_dup = vapply(requested, function(s) n_by(s, cnv$CNV == "DUP"), numeric(1)),
@@ -218,6 +248,7 @@ canope_build_data <- function(env, qc_metrics_file, settings, sample_table, log_
     n_targets = vapply(requested, function(s) as.numeric(get_status(s, "n_targets", NA_integer_)), numeric(1)),
     n_dropped = vapply(requested, function(s) as.numeric(get_status(s, "n_low_count_dropped", NA_integer_)), numeric(1)),
     sex_inferred = if (!is.null(sex_check)) sex_check$inferred_sex[match(requested, sex_check$sample)] else NA_character_,
+    reason = reason_col,
     stringsAsFactors = FALSE, row.names = NULL)
 
   # ---- chromosomes ----
@@ -295,6 +326,24 @@ canope_build_data <- function(env, qc_metrics_file, settings, sample_table, log_
                               stringsAsFactors = FALSE)
   }
 
+  # ---- qc_flags: a Whole-sample / fail row for each not-analysed sample ----
+  # Documents WHY the sample was excluded from calling (with the enriched
+  # reason that includes QC context), so the Sample QC flags card and the
+  # global severity filter treat it as a failure.  Matches ECHO's behaviour.
+  excl_samples <- requested[!(requested %in% analysed_samples)]
+  if (length(excl_samples)) {
+    excl_idx <- match(excl_samples, requested)
+    excl_reason <- reason_col[excl_idx]
+    new_rows <- data.frame(
+      Sample = excl_samples, Exon = "All", Type = "Whole sample",
+      Details = sprintf("Not analysed: %s", excl_reason),
+      Gene = "All", Severity = "fail", stringsAsFactors = FALSE)
+    existing <- paste(qc_flags_df$Sample, qc_flags_df$Type, qc_flags_df$Details)
+    dup <- paste(new_rows$Sample, new_rows$Type, new_rows$Details) %in% existing
+    if (any(dup)) new_rows <- new_rows[!dup, , drop = FALSE]
+    if (nrow(new_rows)) qc_flags_df <- rbind(qc_flags_df, new_rows)
+  }
+
   # ---- PCA ----
   pca_json <- NULL
   if (length(sample_cols) >= 3L) {
@@ -370,7 +419,7 @@ canope_build_data <- function(env, qc_metrics_file, settings, sample_table, log_
   fl <- samples_df$sample[samples_df$status == "failed"]
   if (length(fl)) add_w("fail", "Samples", sprintf("%d sample(s) FAILED: %s.", length(fl), paste(fl, collapse = ", ")))
   ex <- samples_df$sample[samples_df$status == "excluded"]
-  if (length(ex)) add_w("warn", "Samples", sprintf("%d excluded: %s.", length(ex), paste(ex, collapse = ", ")))
+  if (length(ex)) add_w("fail", "Samples", sprintf("%d sample(s) excluded: %s.", length(ex), paste(ex, collapse = ", ")))
   for (s in requested) for (f in flags[[s]]) if (f$level %in% c("fail", "warn")) add_w(f$level, "Sample metrics", f$text, s)
   if (n_flagged_bg > 0) add_w("warn", "Calls", sprintf("%d call(s) background calibration flag.", n_flagged_bg))
   if (n_plot_missing > 0 && !is.null(calls_json)) add_w("info", "Calls", sprintf("%d call(s) no embedded plot.", n_plot_missing))
@@ -387,9 +436,35 @@ canope_build_data <- function(env, qc_metrics_file, settings, sample_table, log_
   }
   alerts <- lapply(warns, alert_from_warning)
 
-  # ---- derive ECHO-style scope from CANOPE chromosomes ----
-  scope_df <- data.frame(
-    chromosome = inv_df$chromosome, class = inv_df$class, label = inv_df$chromosome,
+  # ---- derive per-class scope (matches ECHO's chromosome_scope() layout) ----
+  # The unified report JS expects SCOPE to have one row per chromosome CLASS
+  # (autosome / X / Y / other) with columns: class, label, targets, present,
+  # analysed.  This drives the "Run scope by chromosome class" card, the
+  # persistent chromosome-scope warning in the header, and the
+  # missingBedChromosomeClasses() check.
+  modechrom_run <- as.character(run$modechrom %||% "A")
+  removeY_run <- isTRUE(run$removeY %||% TRUE)
+  scope_classes <- c("autosome", "X", "Y", "other")
+  scope_labels <- c(autosome = "Autosomes (chr1-22)", X = "chrX", Y = "chrY", other = "Other contigs")
+  scope_rows <- lapply(scope_classes, function(cls) {
+    sub <- inv_df[tolower(inv_df$class) == cls, , drop = FALSE]
+    present <- nrow(sub) > 0L
+    targets <- if (present) sum(sub$targets_in_bed) else 0L
+    analysed <- if (!present) FALSE else {
+      if (cls == "autosome") identical(modechrom_run, "A")
+      else if (cls == "X") modechrom_run %in% c("XX", "XY")
+      else if (cls == "Y") identical(modechrom_run, "XY") && !removeY_run
+      else TRUE
+    }
+    data.frame(class = cls, label = scope_labels[cls], targets = targets,
+               present = present, analysed = analysed, stringsAsFactors = FALSE)
+  })
+  scope_df <- do.call(rbind, scope_rows)
+  # Per-chromosome table for chr / chr_all (used by the JS for missing-chromosome
+  # detection and the genome-wide extent).  The old code reused scope_df here,
+  # but scope_df is now per-class; build a proper per-chromosome table instead.
+  chr_df <- data.frame(
+    chromosome = inv_df$chromosome, class = inv_df$class,
     targets = inv_df$targets_in_bed, first = NA_integer_, last = NA_integer_,
     present = TRUE, analysed = inv_df$analysed, stringsAsFactors = FALSE)
 
@@ -412,6 +487,25 @@ canope_build_data <- function(env, qc_metrics_file, settings, sample_table, log_
   mode_label <- switch(as.character(run$modechrom %||% "?"), A = "Autosomes (A)", XX = "chrX, female references (XX)", XY = "chrX/chrY, male references (XY)", "unknown")
   scope_incomplete <- isTRUE(both_ok == FALSE) || (!is.na(both_ok) && !both_ok)
 
+  # ---- target depth distribution (for the QC > Target depth sub-tab) ----
+  # Matches the ECHO report's depth_hist: histogram of log10(median target
+  # depth) so the "Target depth distribution" chart can render.
+  depth_hist_json <- NULL
+  if (length(sample_cols) > 0L) {
+    exon_med <- tryCatch({
+      as.matrix(counts[, sample_cols, drop = FALSE])
+    }, error = function(e) NULL)
+    if (!is.null(exon_med)) {
+      exon_med <- apply(exon_med, 1L, stats::median, na.rm = TRUE)
+      lm_vals <- log10(pmax(exon_med[is.finite(exon_med)], 1))
+      if (length(lm_vals) > 1L) {
+        br <- seq(0, max(1, ceiling(max(lm_vals) * 10) / 10), length.out = 41L)
+        hh <- graphics::hist(lm_vals, breaks = br, plot = FALSE, include.lowest = TRUE)
+        depth_hist_json <- list(mid = canope_arr(round(hh$mids, 3)), counts = canope_arr(hh$counts))
+      }
+    }
+  }
+
   list(
     meta = list(
       source = "CANOPE",
@@ -431,7 +525,7 @@ canope_build_data <- function(env, qc_metrics_file, settings, sample_table, log_
       both_chromosome_classes = if (is.na(both_ok)) NULL else both_ok),
     samples = rep_table(samples_df), flags = lapply(flags, function(f) unname(f)), sample_attrs = list(),
     warnings = unname(warns), alerts = alerts,
-    scope = rep_table(scope_df), chr = rep_table(scope_df), chr_all = rep_table(scope_df),
+    scope = rep_table(scope_df), chr = rep_table(chr_df), chr_all = rep_table(chr_df),
     chromosomes = list(
       status = rep_table(chr_status),
       messages = canope_arr(chr_messages),
@@ -441,7 +535,7 @@ canope_build_data <- function(env, qc_metrics_file, settings, sample_table, log_
                     len = canope_arr(as.numeric(ext))),
       sex = if (!is.null(sex_check)) rep_table(sex_check) else NULL),
     qc = qc_json, qc_flags = rep_table(qc_flags_df),
-    corr = corr, pca = pca_json, depth_hist = NULL,
+    corr = corr, pca = pca_json, depth_hist = depth_hist_json,
     calls = calls_json, plots = plots, windows = plots,
     refs = lapply(refs, function(x) I(as.character(x))),
     settings = lapply(seq_along(prm), function(i) I(c(names(prm)[i], prm[[i]]))),
@@ -490,12 +584,14 @@ canope_call_window <- function(call_row, bed, bed_chr, models, flank = 5L, gene_
   gp <- compute_gene_gap_positions(bed, win, gap = gene_gap)
   affected <- win %in% call_rows; bg <- check_background_calibration(ratio, lo, hi, affected)
   rows_by_ref <- function(mat, digits) lapply(seq_len(ncol(mat)), function(j) canope_num(mat[, j], digits))
+  ref_cov_vals <- rows_by_ref(log2(refmat + pc), 2)
   list(
     sample = s, exon = canope_arr(if (!is.null(exon_index)) exon_index[win] else seq_along(win)),
     gene = canope_arr(as.character(bed$GENE[win])), pos = canope_arr(paste0(bed_chr[win], ":", bed$start[win], "-", bed$end[win])),
     px = canope_num(gp$px, 2), gene_group = canope_arr(gp$gene_group), affected = canope_arr(as.integer(affected)),
     test_log = canope_num(log2(test + pc), 3), ratio = canope_num(ratio, 3), lo = canope_num(lo, 3), hi = canope_num(hi, 3), z = canope_num(z, 2),
-    ref_names = canope_arr(colnames(refmat)), ref_log = rows_by_ref(log2(refmat + pc), 2), ref_z = rows_by_ref(ref_z, 2),
+    ref_names = canope_arr(colnames(refmat)), ref_log = ref_cov_vals, ref_cov = ref_cov_vals, ref_z = rows_by_ref(ref_z, 2),
+    observed = canope_num(test, 1), expected = canope_num(expected_safe, 1),
     bg = list(n_background = bg$n_background, n_outside = bg$n_outside, pct_outside = if (is.na(bg$pct_outside)) NULL else round(bg$pct_outside, 1), flag = isTRUE(bg$flag)),
     off = canope_arr(rep(FALSE, length(win))), xlab = canope_arr(as.character(seq_along(win))))
 }
