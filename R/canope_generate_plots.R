@@ -1,290 +1,13 @@
-#' Generate CANOPE CNV Detection Plots
-#'
-#' Produces per-call PDFs with reference/test log-coverage, gene tiles,
-#' log2(observed/expected) with NB predictive intervals, and a z-score panel
-#' relative to reference samples.
-#'
-#' @param rdata_file  Path to workspace \code{.RData} from \code{run_canope}.
-#' @param output_dir  Directory for PDF output.
-#' @param modechrom   \code{"A"}, \code{"XX"}, or \code{"XY"} chromosome filter.
-#' @param prefix      Filename prefix (default: date stamp).
-#' @param flank       Number of flanking targets to show on each side.
-#' @param gene_gap    Numeric >= 0. Extra x-axis units inserted between a
-#'   gene's last exon and the next gene's first exon, in every panel, so
-#'   the two are visually separated instead of sitting flush like ordinary
-#'   neighbouring exons. \code{0} disables the extra spacing. Ported from
-#'   ECHO; see \code{\link{compute_gene_gap_positions}}. Default \code{1}.
-#' @param debug       Print extra messages.
-#'
-#' @importFrom ggplot2 ggplot geom_point geom_tile geom_ribbon geom_hline aes scale_color_manual theme theme_bw labs scale_x_continuous element_text element_blank
-#' @importFrom grDevices pdf dev.off dev.list
-#' @importFrom grid grid.newpage grid.layout pushViewport viewport
-#' @importFrom stats ave qnbinom median sd
-#' @export
-generate_plots <- function(
-    rdata_file,
-    output_dir = "./plots",
-    modechrom = "A",
-    prefix = NULL,
-    flank = 5L,
-    gene_gap = 1,
-    debug = FALSE
-) {
-  message("[INFO] BEGIN plot generation")
+# ============================================================================
+# CANOPE static (PDF) plots.
+#
+# CANOPE only builds the *window* of a call (its negative-binomial model, in
+# log2 units); the four panels themselves (coverage, gene tiles, 95% interval,
+# z-scores) are the shared ones of cnv_shared_plots.R, the same code and the
+# same colours ECHO and the HTML report use.
+# ============================================================================
 
-  if (!file.exists(rdata_file)) stop("[ERROR] Summary RData not found: ", rdata_file)
-  load(rdata_file)
-
-  if (!exists("bed_file")) {
-    message("[INFO] 'bed_file' not found in RData; reconstructing from 'counts'.")
-    if (exists("counts") && all(c("chromosome", "start", "end") %in% colnames(counts))) {
-      bed_file <- counts[, intersect(c("chromosome", "start", "end", "target", "gc", "GENE"),
-                                     colnames(counts)), drop = FALSE]
-    } else {
-      stop("[ERROR] Cannot reconstruct 'bed_file' from counts.")
-    }
-  }
-
-  required_vars <- c("cnv_calls", "counts", "bed_file", "models", "refs")
-  missing_vars <- setdiff(required_vars, ls())
-  if (length(missing_vars) > 0)
-    stop("[ERROR] Missing variables in RData: ", paste(missing_vars, collapse = ", "))
-
-  model_fields_missing <- vapply(models, function(m)
-    !all(c("target", "test_counts", "ref_matrix") %in% names(m)), logical(1))
-  if (length(models) > 0 && any(model_fields_missing))
-    stop("[ERROR] 'models' in this RData is missing 'test_counts'/'ref_matrix' ",
-         "(written by an older run_canope()/call_cnvs()). Re-run run_canope() ",
-         "to regenerate rdata_output before plotting.")
-
-  if (!"target" %in% colnames(bed_file) && "target" %in% colnames(counts))
-    bed_file$target <- counts$target
-  if (!"target" %in% colnames(bed_file))
-    bed_file$target <- seq_len(nrow(bed_file))
-  if (!"GENE" %in% colnames(bed_file))
-    bed_file$GENE <- "TargetRegion"
-
-  bed_file$chromosome <- format_chr_label(bed_file$chromosome)
-  if ("chromosome" %in% colnames(counts))
-    counts$chromosome <- format_chr_label(counts$chromosome)
-  if (nrow(cnv_calls) > 0)
-    cnv_calls$CHR <- format_chr_label(cnv_calls$CHR)
-
-  prefix_str <- if (is.null(prefix) || prefix == "") format(Sys.time(), "%Y%m%d") else prefix
-  if (!dir.exists(output_dir)) dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
-
-  inc <- if (modechrom == "XX") "chrX" else if (modechrom == "XY") c("chrX", "chrY") else NULL
-  exc <- if (modechrom == "A") c("chrX", "chrY") else NULL
-  cnv_plot <- canope_filter_chromosomes(cnv_calls, include = inc, exclude = exc)
-
-  message(sprintf("[INFO] Number of CNV calls to plot: %d", nrow(cnv_plot)))
-
-  # Use the exon numbers recorded before QC filtering (bed_file$exon_number)
-  # when the workspace has them; otherwise number the retained exons.
-  exon_index <- compute_exon_index(bed_file)
-
-  if (nrow(cnv_plot) == 0) {
-    message("[INFO] No CNV calls match chromosome filter.")
-    return(invisible(NULL))
-  }
-
-  plot_count <- 0L
-  for (call_idx in seq_len(nrow(cnv_plot))) {
-    sample_name <- as.character(cnv_plot$SAMPLE[call_idx])
-    target_chr  <- as.character(cnv_plot$CHR[call_idx])
-    target_bounds <- parse_canope_targets(cnv_plot$TARGETS[call_idx])
-    if (length(target_bounds) < 2L) {
-      message("[WARN] Malformed TARGETS for call ", call_idx)
-      next
-    }
-    idx_start <- target_bounds[1L]
-    idx_end   <- target_bounds[2L]
-
-    row_start <- targets_to_rows(idx_start, bed_file$target)
-    row_end   <- targets_to_rows(idx_end, bed_file$target)
-    if (is.na(row_start) || is.na(row_end)) {
-      message("[WARN] Targets ", idx_start, "..", idx_end, " not in bed for call ", call_idx)
-      next
-    }
-
-    gene_raw <- if ("GENE" %in% colnames(cnv_plot)) as.character(cnv_plot$GENE[call_idx]) else "Region"
-    gene_str <- sanitize_filename(gene_raw)
-    exon_range <- seq(max(1L, row_start - flank), min(nrow(bed_file), row_end + flank))
-
-    single_chr <- length(unique(bed_file$chromosome[exon_range])) == 1L
-    prev <- FALSE
-    new_chr <- ""
-
-    if (!single_chr) {
-      prev    <- bed_file$chromosome[exon_range[1L]] != target_chr
-      new_chr <- if (prev) bed_file$chromosome[exon_range[1L]]
-      else bed_file$chromosome[utils::tail(exon_range, 1L)]
-      exon_range <- exon_range[bed_file$chromosome[exon_range] == target_chr]
-    }
-
-    # Only exons the HMM actually evaluated for this sample: targets dropped
-    # for this sample (low reference mean / near-zero reads) have no model
-    # statistics and would otherwise be drawn with median-imputed values.
-    model_targets <- models[[sample_name]]$target
-    if (!is.null(model_targets) && length(exon_range) > 0L)
-      exon_range <- exon_range[bed_file$target[exon_range] %in% model_targets]
-
-    if (length(exon_range) == 0L) {
-      message(sprintf("[WARN] No targets in range for call %d (%s)", call_idx, sample_name))
-      next
-    }
-
-    # Gap-inserted x-axis positions
-    gap_pos    <- compute_gene_gap_positions(bed_file, exon_range, gap = gene_gap)
-    px         <- gap_pos$px
-    gene_group <- gap_pos$gene_group
-
-    # Rows of the call = every retained target whose id lies in the call's
-    # range (ids dropped by QC are simply absent, not "unmatched").
-    cnv_rows <- which(bed_file$target >= idx_start & bed_file$target <= idx_end &
-                        bed_file$chromosome == target_chr)
-
-    tryCatch({
-      if (!sample_name %in% names(refs))
-        stop(sprintf("Sample '%s' not found in 'refs'", sample_name))
-      if (!sample_name %in% names(models))
-        stop(sprintf("Sample '%s' not found in 'models'", sample_name))
-      if (!sample_name %in% colnames(counts))
-        stop(sprintf("Sample '%s' not found in counts", sample_name))
-
-      ref_samples <- refs[[sample_name]]
-      if (length(ref_samples) == 0L)
-        stop(sprintf("No reference samples for '%s'", sample_name))
-
-      model_mean <- model_lookup(models[[sample_name]], "mean", bed_file$target[exon_range])
-      model_var  <- model_lookup(models[[sample_name]], "var_estimate", bed_file$target[exon_range])
-
-      pseudocount <- 0.5
-      test_log <- log2(counts[exon_range, sample_name] + pseudocount)
-
-      cov_list <- list()
-      for (r in ref_samples) {
-        if (!r %in% colnames(counts)) {
-          warning(sprintf("Reference '%s' missing from counts, skipping", r))
-          next
-        }
-        scaling <- stats::median(
-          counts[exon_range, sample_name] / pmax(counts[exon_range, r], 1),
-          na.rm = TRUE
-        )
-        r_log <- log2((counts[exon_range, r] * scaling) + pseudocount)
-        cov_list[[length(cov_list) + 1L]] <- data.frame(
-          exon_idx = exon_range, px = px, gene_group = gene_group, coverage = r_log, group = r,
-          color_group = "Reference Sample", stringsAsFactors = FALSE
-        )
-      }
-      if (length(cov_list) == 0L) stop("No valid reference samples")
-
-      cov_list[[length(cov_list) + 1L]] <- data.frame(
-        exon_idx = exon_range, px = px, gene_group = gene_group, coverage = test_log, group = "Test Sample",
-        color_group = "Test Sample", stringsAsFactors = FALSE
-      )
-      cov_data <- do.call(rbind, cov_list)
-
-      pt_data <- data.frame(
-        exon_idx = exon_range, px = px, gene_group = gene_group, coverage = test_log,
-        color_group = ifelse(exon_range %in% cnv_rows, "Affected exon(s)", "Test Sample"),
-        stringsAsFactors = FALSE
-      )
-      pt_data <- pt_data[pt_data$color_group == "Affected exon(s)", , drop = FALSE]
-
-      p_cov <- create_coverage_plot(
-        cov_data, pt_data, single_chr, prev, exon_range, exon_index, px,
-        sample_name = sample_name
-      )
-
-      p_genes <- create_gene_tile_plot(bed_file, exon_range, single_chr, prev, new_chr, px)
-      test_counts   <- model_lookup(models[[sample_name]], "test_counts", bed_file$target[exon_range])
-      target_means  <- model_mean
-      target_vars   <- model_var
-      expected_safe <- pmax(target_means, 1) + pseudocount
-
-      ratio <- log2((test_counts + pseudocount) / expected_safe)
-      dispersion <- target_vars - target_means
-      size_param <- ifelse(dispersion > 0, target_means^2 / dispersion, Inf)
-
-      alpha <- 0.05
-      mins <- stats::qnbinom(alpha / 2, mu = target_means, size = size_param)
-      maxs <- stats::qnbinom(1 - alpha / 2, mu = target_means, size = size_param)
-      lo <- log2((mins + pseudocount) / expected_safe)
-      hi <- log2((maxs + pseudocount) / expected_safe)
-
-      ci_data <- data.frame(
-        exon = exon_range, px = px, gene_group = gene_group, ratio = ratio, lo = lo, hi = hi,
-        is_affected = factor(
-          exon_range %in% cnv_rows,
-          levels = c(FALSE, TRUE),
-          labels = c("Observed", "Affected")
-        )
-      )
-
-      bg_calib <- check_background_calibration(
-        ci_data$ratio, ci_data$lo, ci_data$hi, ci_data$is_affected == "Affected"
-      )
-      ci_subtitle <- "95% NB predictive interval"
-      if (isTRUE(bg_calib$flag)) {
-        ci_subtitle <- sprintf(
-          "95%% NB predictive interval  [%d%% of background exons outside CI (%d/%d) \u2014 check region/reference match]",
-          round(bg_calib$pct_outside), bg_calib$n_outside, bg_calib$n_background
-        )
-      }
-
-      p_ci <- ggplot2::ggplot(ci_data, ggplot2::aes(x = px)) +
-        ggplot2::geom_ribbon(ggplot2::aes(ymin = lo, ymax = hi, group = gene_group), fill = "grey90", colour = NA) +
-        ggplot2::geom_hline(yintercept = 0, linetype = "dashed", colour = "black") +
-        ggplot2::geom_point(ggplot2::aes(y = ratio, color = is_affected), size = 3) +
-        ggplot2::scale_color_manual(values = c("Observed" = "blue", "Affected" = "red")) +
-        ggplot2::theme_bw() +
-        ggplot2::theme(legend.position = "none") +
-        ggplot2::labs(x = "", y = "log2(Observed / Expected)",
-                      subtitle = ci_subtitle)
-      p_ci <- apply_xaxis_formatting(p_ci, single_chr, prev, exon_range, exon_index, px)
-
-      p_z <- create_zscore_plot(
-        models[[sample_name]], exon_range, bed_file$target[exon_range], sample_name, ref_samples,
-        cnv_rows, single_chr, prev, exon_index, px, gene_group
-      )
-
-      interval_label <- as.character(cnv_plot$INTERVAL[call_idx])
-      file_path <- file.path(
-        output_dir,
-        paste0(prefix_str, ".", sample_name, ".", target_chr, "_",
-               gene_str, "_", call_idx, ".pdf")
-      )
-
-      grDevices::pdf(file_path, useDingbats = FALSE, width = 8, height = 12)
-      grid::grid.newpage()
-      grid::pushViewport(grid::viewport(layout = grid::grid.layout(8, 1)))
-      print(p_cov,   vp = grid::viewport(layout.pos.row = 1:3, layout.pos.col = 1))
-      print(p_genes, vp = grid::viewport(layout.pos.row = 4,   layout.pos.col = 1))
-      print(p_ci,    vp = grid::viewport(layout.pos.row = 5:6, layout.pos.col = 1))
-      print(p_z,     vp = grid::viewport(layout.pos.row = 7:8, layout.pos.col = 1))
-      grDevices::dev.off()
-
-      plot_count <- plot_count + 1L
-      if (debug)
-        message(sprintf("[INFO] Saved %s (%s)", file_path, interval_label))
-      else
-        message(sprintf("[INFO] Plot %d/%d saved: %s", plot_count, nrow(cnv_plot), basename(file_path)))
-
-    }, error = function(e) {
-      if (length(grDevices::dev.list()) > 0L) grDevices::dev.off()
-      message("[ERROR] Call ", call_idx, " (", sample_name, "): ", conditionMessage(e))
-    })
-  }
-
-  message(sprintf("[INFO] END plot generation – %d/%d plots created",
-                  plot_count, nrow(cnv_plot)))
-  invisible(plot_count)
-}
-
-
-#' Look Up Per-Target Model Statistics
+#' Look up per-target model statistics
 #' @noRd
 model_lookup <- function(model, field, target_ids) {
   if (is.list(model) && !is.null(model$target)) {
@@ -295,187 +18,208 @@ model_lookup <- function(model, field, target_ids) {
   } else {
     vals <- model[[field]][target_ids]
   }
-  if (any(is.na(vals)))
+  if (any(is.na(vals))) {
     warning("Some targets missing model statistics; using median imputation")
-  vals[is.na(vals)] <- stats::median(model[[field]], na.rm = TRUE)
+    vals[is.na(vals)] <- stats::median(model[[field]], na.rm = TRUE)
+  }
   vals
 }
 
-
-#' Look Up Per-Target Model Statistics (matrix form)
+#' Look up per-target model statistics (matrix form)
 #' @noRd
 model_matrix_lookup <- function(model, field, target_ids) {
   mat <- model[[field]]
   idx <- match(as.integer(target_ids), as.integer(model$target))
   out <- mat[idx, , drop = FALSE]
-  if (any(is.na(idx)))
+  if (any(is.na(idx))) {
     warning("Some targets missing model statistics; using median imputation")
-  for (j in seq_len(ncol(out))) {
-    miss <- is.na(out[, j])
-    if (any(miss)) out[miss, j] <- stats::median(mat[, j], na.rm = TRUE)
+    for (j in seq_len(ncol(out))) {
+      miss <- is.na(out[, j])
+      if (any(miss)) out[miss, j] <- stats::median(mat[, j], na.rm = TRUE)
+    }
   }
   out
 }
 
-
-#' Z-Score Panel vs Reference Samples
-#' 
-#' @param model      \code{models[[sample_name]]} — must carry
-#'   \code{target}, \code{test_counts}, \code{var_estimate}, and
-#'   \code{ref_matrix} (columns named by reference sample, in the same
-#'   order as \code{ref_samples}).
-#' @param exon_range Row positions (into \code{bed_file}) of the exon window
-#'   being plotted — used only for x-axis placement.
-#' @param target_ids \code{bed_file$target[exon_range]} — the target IDs
-#'   used to align model data, since model rows are not necessarily in the
-#'   same order/subset as \code{bed_file}.
-#' @param px         Gap-inserted x-axis positions for \code{exon_range}
-#'   (see \code{\link{compute_gene_gap_positions}}), same order/length.
-#' @param gene_group Per-position gene-group id (same source). Retained on
-#'   the plotting data frame for parity with the other panels, though this
-#'   points-only panel has no line/ribbon layer for it to group.
+#' Target annotation of a CANOPE workspace in the shape the shared plots expect
+#'
+#' Adds the lower-case \code{gene}, the \code{off_target} flag and the exon
+#' numbers recorded BEFORE QC (so a removed exon does not renumber its
+#' neighbours).
 #' @noRd
-create_zscore_plot <- function(model, exon_range, target_ids, sample_name, ref_samples,
-                               cnv_rows, single_chr, prev, exon_index, px, gene_group) {
-  test_vals <- model_lookup(model, "test_counts", target_ids)
-  ref_mat   <- model_matrix_lookup(model, "ref_matrix", target_ids)
-  model_var <- model_lookup(model, "var_estimate", target_ids)
-
-  means <- rowMeans(ref_mat, na.rm = TRUE)
-  sds   <- sqrt(pmax(model_var, 1))
-  sds[!is.finite(sds) | sds < 1e-6] <- 1e-6
-
-  sample_z <- (test_vals - means) / sds
-  ref_z <- sapply(seq_along(ref_samples), function(i) (ref_mat[, i] - means) / sds)
-
-  z_lim <- suppressWarnings(max(abs(c(ref_z, sample_z)), na.rm = TRUE) * 1.1)
-  if (!is.finite(z_lim)) z_lim <- 1
-  z_lim <- max(z_lim, 1)
-
-  z_df <- data.frame(
-    exon = rep(exon_range, times = length(ref_samples) + 1L),
-    px = rep(px, times = length(ref_samples) + 1L),
-    gene_group = rep(gene_group, times = length(ref_samples) + 1L),
-    z = c(as.vector(ref_z), sample_z),
-    series = rep(c(ref_samples, sample_name), each = length(exon_range)),
-    highlight = rep(exon_range %in% cnv_rows, times = length(ref_samples) + 1L)
-  )
-  z_df$series <- factor(z_df$series, levels = c(ref_samples, sample_name))
-
-  p <- ggplot2::ggplot(z_df, ggplot2::aes(x = px, y = z)) +
-    ggplot2::geom_point(
-      data = subset(z_df, series != sample_name),
-      colour = "gray60", size = 1.5, alpha = 0.7
-    ) +
-    ggplot2::geom_point(
-      data = subset(z_df, series == sample_name & !highlight),
-      colour = "blue", size = 2.2
-    ) +
-    ggplot2::geom_point(
-      data = subset(z_df, series == sample_name & highlight),
-      colour = "red", size = 2.8
-    ) +
-    ggplot2::geom_hline(yintercept = 0, linetype = "dashed") +
-    ggplot2::coord_cartesian(ylim = c(-z_lim, z_lim)) +
-    ggplot2::theme_bw() +
-    ggplot2::labs(x = "", y = "Z-score vs references")
-
-  apply_xaxis_formatting(p, single_chr, prev, exon_range, exon_index, px)
+canope_target_annotation <- function(bed_file, counts = NULL) {
+  if (!"target" %in% colnames(bed_file))
+    bed_file$target <- if (!is.null(counts) && "target" %in% colnames(counts)) counts$target else seq_len(nrow(bed_file))
+  if (!any(tolower(colnames(bed_file)) %in% c("gene", "gene_symbol", "symbol"))) bed_file$GENE <- "TargetRegion"
+  bed_file <- normalize_target_annotation(bed_file)
+  if (!"exon_number" %in% colnames(bed_file) || all(is.na(bed_file$exon_number)))
+    bed_file$exon_number <- compute_exon_index(bed_file)
+  bed_file
 }
 
-
+#' Plot window of one CANOPE call (feeds the PDF panels AND the HTML report)
+#'
+#' All coverage values are log2(count + 0.5); the ratio is
+#' log2(observed / expected) with a 95\% negative-binomial predictive interval
+#' from the HMM's own per-target mean / variance, and the z-scores use the same
+#' variance, so a well-calibrated region shows the reference points clustered
+#' around zero.
+#'
+#' @param call_row One row of the CANOPE call table (\code{SAMPLE, CNV, CHR,
+#'   TARGETS}).
+#' @param counts,bed_file Count matrix and its target annotation
+#'   (\code{canope_target_annotation()}).
+#' @param models,refs \code{models} and \code{refs} of the workspace.
+#' @param gene_gap Extra x units between genes.
+#' @param flank Targets shown on each side of the call.
+#' @param labels X-axis label of every target (\code{target_axis_labels()}).
+#' @return A window list (see cnv_shared_plots.R) or \code{NULL} when the call
+#'   cannot be drawn (no model, no references, empty window).
 #' @noRd
-apply_xaxis_formatting <- function(p, single_chr, prev, exon_range, exon_index, px) {
-  if (length(exon_range) == 0L) return(p)
-  min_p <- min(px)
-  max_p <- max(px)
+canope_plot_data <- function(call_row, counts, bed_file, models, refs, gene_gap = 1, flank = 5L,
+                             labels = target_axis_labels(bed_file, counts)) {
+  sample <- as.character(call_row$SAMPLE)
+  model <- models[[sample]]
+  ref_samples <- refs[[sample]]
+  if (!length(ref_samples) || is.null(model) || !sample %in% colnames(counts)) return(NULL)
+  tb <- parse_canope_targets(call_row$TARGETS)
+  if (length(tb) < 2L) return(NULL)
+  idx_start <- tb[1L]; idx_end <- tb[2L]
+  target_chr <- normalize_chromosome_vec(call_row$CHR, bed_file$chromosome)
+  bed_chr <- normalize_chromosome_vec(bed_file$chromosome, bed_file$chromosome)
 
-  if (single_chr) {
-    b <- px
-    l <- exon_index[exon_range]
-    lim <- NULL
-  } else if (prev) {
-    b <- c((min_p - 6L):(min_p - 1L), px)
-    l <- c(rep("", 6L), exon_index[exon_range])
-    lim <- c(min_p - 6.75, max_p)
-  } else {
-    b <- c(px, (max_p + 1L):(max_p + 6L))
-    l <- c(exon_index[exon_range], rep("", 6L))
-    lim <- c(min_p, max_p + 6.75)
-  }
-
-  p + ggplot2::scale_x_continuous(breaks = b, labels = l, limits = lim) +
-    ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45, size = 6, hjust = 1))
-}
-
-
-# ===== UPDATED: create_coverage_plot with sample_name argument =====
-create_coverage_plot <- function(cov_data, pt_data, single_chr, prev, exon_range, exon_index, px, sample_name = NULL) {
-  cols <- c("Reference Sample" = "gray", "Test Sample" = "blue", "Affected exon(s)" = "red")
-  
-  test_label <- if (!is.null(sample_name) && nzchar(sample_name)) {
-    paste0("Test Sample (", sample_name, ")")
-  } else {
-    "Test Sample"
-  }
-  labels <- c("Reference Sample" = "Reference Sample",
-              "Test Sample"      = test_label,
-              "Affected exon(s)" = "Affected exon(s)")
-  
-  p_cov <- ggplot2::ggplot() +
-    ggplot2::geom_point(
-      data = subset(cov_data, color_group == "Reference Sample"),
-      ggplot2::aes(x = px, y = coverage, color = color_group), size = 2
-    ) +
-    ggplot2::geom_point(
-      data = subset(cov_data, color_group == "Test Sample"),
-      ggplot2::aes(x = px, y = coverage, color = color_group), size = 2
-    ) +
-    ggplot2::geom_point(
-      data = pt_data,
-      ggplot2::aes(x = px, y = coverage, color = color_group), size = 3
-    ) +
-    ggplot2::scale_colour_manual(values = cols, labels = labels, guide = "legend") +
-    ggplot2::labs(y = "log2(Coverage)", x = NULL) +
-    ggplot2::theme_bw() +
-    ggplot2::theme(legend.position = "top", legend.title = ggplot2::element_blank())
-  
-  apply_xaxis_formatting(p_cov, single_chr, prev, exon_range, exon_index, px)
-}
-
-
-#' @noRd
-create_gene_tile_plot <- function(bed_file, exon_range, single_chr, prev, new_chr, px) {
-  if (length(exon_range) == 0L) return(ggplot2::ggplot())
-  temp <- cbind(row = seq_len(nrow(bed_file)), bed_file)[exon_range, , drop = FALSE]
-
-  gene_names <- unique(bed_file$GENE[exon_range])
-  gene_tiles <- data.frame(
-    gene  = gene_names,
-    mid   = vapply(gene_names, function(g) mean(px[temp$GENE == g]), numeric(1)),
-    width = vapply(gene_names, function(g) sum(temp$GENE == g), numeric(1)) - 0.5,
-    y     = 1,
-    stringsAsFactors = FALSE
-  )
+  # rows of the call = every retained target whose id lies in the call's range
+  # (ids dropped by QC are simply absent, not "unmatched")
+  cnv_rows <- which(bed_file$target >= idx_start & bed_file$target <= idx_end & bed_chr == target_chr)
+  if (!length(cnv_rows)) return(NULL)
+  full <- seq(max(1L, min(cnv_rows) - flank), min(nrow(bed_file), max(cnv_rows) + flank))
+  single_chr <- length(unique(bed_chr[full])) == 1L
+  prev <- FALSE; new_chr <- ""; er <- full
   if (!single_chr) {
-    gene_tiles <- rbind(
-      gene_tiles,
-      data.frame(
-        gene = new_chr,
-        mid  = if (prev) min(px) - 5 else max(px) + 5,
-        width = 3.5, y = 1, stringsAsFactors = FALSE
-      )
-    )
+    prev    <- bed_chr[full[1L]] != target_chr
+    new_chr <- bed_file$chromosome[if (prev) full[1L] else utils::tail(full, 1L)]
+    er      <- full[bed_chr[full] == target_chr]
   }
-  ggplot2::ggplot(gene_tiles, ggplot2::aes(x = mid, y = y, fill = gene, width = width, label = gene)) +
-    ggplot2::geom_tile(alpha = 0.7) +
-    ggplot2::geom_text(size = 3) +
-    ggplot2::theme_bw() +
-    ggplot2::theme(
-      legend.position = "none",
-      panel.grid = ggplot2::element_blank(),
-      axis.text = ggplot2::element_blank(),
-      axis.ticks = ggplot2::element_blank()
-    ) +
-    ggplot2::labs(x = "", y = "")
+  # Only the targets the HMM evaluated for this sample: a target dropped for this
+  # sample (low reference mean, near-zero reads) has no model statistics and
+  # would otherwise be drawn with imputed values.
+  if (!is.null(model$target)) er <- er[bed_file$target[er] %in% model$target]
+  if (!length(er)) return(NULL)
+
+  gp <- compute_gene_gap_positions(bed_file, er, gap = gene_gap)
+  tid <- bed_file$target[er]
+  affected <- er %in% cnv_rows
+  pc <- 0.5
+
+  test_counts <- as.numeric(model_lookup(model, "test_counts", tid))
+  mu   <- as.numeric(model_lookup(model, "mean", tid))
+  vr   <- as.numeric(model_lookup(model, "var_estimate", tid))
+  expected  <- pmax(mu, 1)
+  disp <- vr - mu
+  size <- ifelse(disp > 0, mu^2 / disp, Inf)
+  ratio <- log2((test_counts + pc) / (expected + pc))
+  lo <- log2((stats::qnbinom(0.025, mu = mu, size = size) + pc) / (expected + pc))
+  hi <- log2((stats::qnbinom(0.975, mu = mu, size = size) + pc) / (expected + pc))
+
+  # coverage of the test sample and of the references, the latter rescaled to the test depth
+  cnt <- function(s) as.numeric(counts[er, s])
+  tcnt <- cnt(sample)
+  have <- ref_samples %in% colnames(counts)
+  ref_mat <- model_matrix_lookup(model, "ref_matrix", tid)
+  if (ncol(ref_mat) != length(ref_samples)) {          # older workspace: keep what lines up
+    k <- min(ncol(ref_mat), length(ref_samples)); ref_samples <- ref_samples[seq_len(k)]; have <- have[seq_len(k)]
+    ref_mat <- ref_mat[, seq_len(k), drop = FALSE]
+  }
+  ref_samples <- ref_samples[have]; ref_mat <- ref_mat[, have, drop = FALSE]
+  if (!length(ref_samples)) return(NULL)
+  ref_log <- stats::setNames(lapply(ref_samples, function(r) {
+    v <- cnt(r)
+    log2(v * stats::median(tcnt / pmax(v, 1), na.rm = TRUE) + pc)
+  }), ref_samples)
+
+  sd_z <- sqrt(pmax(vr, 1)); sd_z[!is.finite(sd_z) | sd_z < 1e-6] <- 1e-6
+  rmean <- rowMeans(ref_mat, na.rm = TRUE)
+  ref_z <- stats::setNames(lapply(seq_along(ref_samples), function(i) (ref_mat[, i] - rmean) / sd_z), ref_samples)
+
+  bg <- check_background_calibration(ratio, lo, hi, affected)
+  subtitle <- if (isTRUE(bg$flag))
+    sprintf("%d%% of background exons outside CI (%d/%d) — check region/reference match",
+            round(bg$pct_outside), bg$n_outside, bg$n_background) else NULL
+
+  list(sample = sample, exon_range = er, px = gp$px, gene_group = gp$gene_group,
+       gene = as.character(bed_file$gene[er]),
+       off = as.logical(bed_file$off_target[er] %||% rep(FALSE, length(er))),
+       xlab = labels[er], affected = affected,
+       test_log = log2(tcnt + pc), ref_log = ref_log,
+       ratio = ratio, lo = lo, hi = hi, observed = test_counts, expected = expected,
+       z = (test_counts - rmean) / sd_z, ref_z = ref_z,
+       bg_calibration = bg, ci_subtitle = subtitle,
+       call_type = toupper(substr(as.character(call_row$CNV), 1, 3)),
+       baseline = 0,
+       labels = list(cov = "log2 coverage", ratio = "log2(observed / expected)",
+                     z = "Z-score vs references (NB SD)"),
+       single_chr = single_chr, prev = prev, new_chr = new_chr,
+       idx_start = idx_start, idx_end = idx_end)
+}
+
+#' Generate CANOPE CNV detection plots (one PDF per call)
+#'
+#' Each PDF has the four panels ECHO draws, from the same code: log2 coverage
+#' of the test sample against its references, the gene tiles, the
+#' log2(observed / expected) with the 95\% negative-binomial predictive
+#' interval, and the z-scores relative to the references.
+#'
+#' @param rdata_file Workspace \code{.RData} written by \code{run_canope()}.
+#' @param output_dir Directory for the PDFs (one sub-folder per sample).
+#' @param modechrom \code{"A"}, \code{"XX"} or \code{"XY"} (restricts the calls plotted).
+#' @param prefix Filename prefix (files are named \code{CANOPE_<prefix>_<sample>_<gene>_<id>.pdf}).
+#' @param flank Targets shown on each side of the call.
+#' @param gene_gap Extra x-axis units between genes (\code{0} = none).
+#' @param log_file Optional pipeline log (the plot messages are appended).
+#' @param debug Also log each PDF written.
+#' @return Invisibly, the number of PDFs written.
+#' @importFrom stats qnbinom median
+#' @export
+generate_plots <- function(rdata_file, output_dir = "./plots", modechrom = "A", prefix = NULL,
+                           flank = 5L, gene_gap = 1, log_file = NULL, debug = FALSE) {
+  lg <- cnv_logger(log_file, tag = "CANOPE", append = TRUE)
+  lg$info("BEGIN plot generation")
+  objs <- load_rdata(rdata_file, required = c("cnv_calls", "counts", "models", "refs"))
+  cnv_calls <- objs$cnv_calls; counts <- objs$counts; models <- objs$models; refs <- objs$refs
+  if (length(models) && any(vapply(models, function(m) !all(c("target", "test_counts", "ref_matrix") %in% names(m)), logical(1))))
+    stop("[ERROR] 'models' in this RData lack 'test_counts'/'ref_matrix' (older run). Re-run run_canope() to regenerate the workspace.")
+  if (is.null(cnv_calls) || nrow(cnv_calls) == 0) { lg$info("No CNV calls to plot."); return(invisible(0L)) }
+
+  bed_file <- canope_target_annotation(objs$bed_file %||% counts[, intersect(c("chromosome", "start", "end", "target", "gc", "GENE"), colnames(counts))], counts)
+  labels <- target_axis_labels(bed_file)
+  # "CANOPE_<prefix>" whether or not the caller already put the CANOPE_ in front
+  base <- sub("^CANOPE_?", "", as.character(prefix %||% ""))
+  dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+
+  keep <- canope_mode_mask(cnv_calls$CHR, modechrom, isTRUE(objs$removeY %||% TRUE))
+  cnv_plot <- cnv_calls[keep, , drop = FALSE]
+  lg$info(sprintf("Number of CNV calls to plot: %d", nrow(cnv_plot)))
+  if (!nrow(cnv_plot)) { lg$info("No CNV calls remain after chromosome filtering."); return(invisible(0L)) }
+
+  n_written <- 0L
+  for (i in seq_len(nrow(cnv_plot))) {
+    tryCatch({
+      row <- cnv_plot[i, , drop = FALSE]
+      pd <- canope_plot_data(row, counts, bed_file, models, refs, gene_gap = gene_gap, flank = flank, labels = labels)
+      if (is.null(pd)) {
+        lg$warn(sprintf("Skipping plot for %s (call %s): no model, no references or empty window", row$SAMPLE, row$CNV.ID))
+        next
+      }
+      gene_str   <- substr(sanitize_filename(as.character(row$GENE)), 1, 60)
+      sample_dir <- file.path(output_dir, sanitize_filename(pd$sample))
+      dir.create(sample_dir, recursive = TRUE, showWarnings = FALSE)
+      file_path <- file.path(sample_dir, paste0(paste(c("CANOPE", if (nzchar(base)) base, pd$sample, gene_str, row$CNV.ID), collapse = "_"), ".pdf"))
+      save_cnv_pdf(list(create_coverage_plot(pd), create_gene_tile_plot(pd),
+                        create_ci_plot(pd), create_zscore_plot(pd)), file_path)
+      n_written <- n_written + 1L
+      if (debug) lg$info(paste("Saved plot:", file_path))
+    }, error = function(e) lg$error(sprintf("Failed to plot call %s: %s", cnv_plot$CNV.ID[i], conditionMessage(e))))
+  }
+  lg$info(sprintf("END plot generation (%d/%d PDF(s) written)", n_written, nrow(cnv_plot)))
+  invisible(n_written)
 }

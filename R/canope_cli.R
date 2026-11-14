@@ -2,7 +2,9 @@
 #'
 #' Reads a YAML configuration file and executes the full CANOPE CNV calling
 #' pipeline with the specified parameters.  All arguments in \code{...} override
-#' the corresponding values in the config file.
+#' the corresponding values in the config file. \code{canope_config_args()}
+#' does the reading and checking on its own (it returns the argument list that
+#' \code{canope()} hands to \code{\link{run_canope}}).
 #'
 #' @param config_path Path to a YAML configuration file. If the file does not
 #'   exist, the function looks in the package's `inst/` directory (for a
@@ -10,7 +12,8 @@
 #' @param ... Additional arguments passed to \code{\link{run_canope}}; these
 #'   take precedence over values in the config file.
 #'
-#' @return Data frame of all called CNVs (invisibly).
+#' @return \code{canope()}: data frame of all called CNVs (invisibly);
+#'   \code{canope_config_args()}: the named argument list for \code{run_canope()}.
 #' @export
 #' @examples
 #' \dontrun{
@@ -18,6 +21,15 @@
 #' canope("config.yaml", p_value = 1e-12, Tnum = 15)
 #' }
 canope <- function(config_path = "config.yaml", ...) {
+  args <- canope_config_args(config_path, ...)
+  message("[INFO] CANOPE pipeline starting with config: ", attr(args, "config_file"))
+  attr(args, "config_file") <- NULL
+  do.call(run_canope, args)
+}
+
+#' @rdname canope
+#' @export
+canope_config_args <- function(config_path = "config.yaml", ...) {
   if (!requireNamespace("yaml", quietly = TRUE))
     stop("The 'yaml' package is required to read configuration files. ",
          "Install it with: install.packages('yaml')")
@@ -107,6 +119,18 @@ canope <- function(config_path = "config.yaml", ...) {
   if (!is.null(v <- pick("min_sample_count")))    args$min_sample_count <- as.integer(v)
   if (!is.null(v <- pick("gc_extreme_filter")))   args$gc_extreme_filter <- as.numeric(unlist(v))
 
+  # Outlier handling, recurrence and terminal-exon options (same keys as ECHO's config)
+  if (!is.null(v <- pick("outlier_sides")))              args$outlier_sides <- as.character(v)
+  if (!is.null(v <- pick("reference_noise_quantile")))   args$reference_noise_quantile <- as.numeric(v)
+  if (!is.null(v <- pick("recurrence_action")))          args$recurrence_action <- as.character(v)
+  if (!is.null(v <- pick("recurrence_min_samples")))     args$recurrence_min_samples <- as.integer(v)
+  if (!is.null(v <- pick("recurrence_min_fraction")))    args$recurrence_min_fraction <- as.numeric(v)
+  if (!is.null(v <- pick("recurrence_min_overlap")))     args$recurrence_min_overlap <- as.numeric(v)
+  if (!is.null(v <- pick("remove_terminal_only")))       args$remove_terminal_only <- as.logical(v)
+  if (!is.null(v <- pick("penalize_terminal_only")))     args$penalize_terminal_only <- as.logical(v)
+  if (!is.null(v <- pick("log_level")))                  args$log_level <- toupper(as.character(v))
+  if (!is.null(v <- pick("log_file")))                   args$log_file <- as.character(v)
+
   args$coverage_backend <- settings$coverage_backend %||% cfg$coverage_backend %||% "bioconductor"
   args$megadepth_op     <- settings$megadepth_op %||% cfg$megadepth_op %||% "sum"
   args$megadepth_threads <- settings$megadepth_threads %||% cfg$megadepth_threads %||% 1L
@@ -148,11 +172,14 @@ canope <- function(config_path = "config.yaml", ...) {
   user_args <- list(...)
   args <- modifyList(args, user_args)
 
+  if (is.null(args$samples) && is.null(args$reads_file))
+    stop("input.bamdir (or a pre-computed reads_file) is required in the config")
+  if (is.null(args$bed_file) && is.null(args$reads_file))
+    stop("input.bed is required in the config unless a pre-computed reads_file is given")
+
   if (is.null(args$fasta_file) && is.null(args$bsgenome_pkg) && is.null(args$gc_file))
     stop("Either fasta_file or bsgenome_pkg (with bed_file), or a pre-computed gc_file, must be provided for GC computation.")
-  if (is.null(args$samples))    stop("samples directory is required (input.bamdir in config)")
-  if (is.null(args$bed_file))   stop("bed_file is required (input.bed in config)")
 
-  message("[INFO] CANOPE pipeline starting with config: ", config_file)
-  do.call(run_canope, args)
+  attr(args, "config_file") <- config_file
+  args
 }

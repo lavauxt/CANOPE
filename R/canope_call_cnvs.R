@@ -523,10 +523,11 @@ summarize_cnvs <- function(cnv_targets, counts, sample_name, state) {
   data.frame(
     sample_name = sample_name,
     cnv_type = cnv_type,
-    cnv_interval = paste0(chromosome, ":", start_base, "-", end_base),
+    # sprintf: paste0() would print round numbers in scientific notation (2e+05)
+    cnv_interval = sprintf("%s:%.0f-%.0f", chromosome, start_base, end_base),
     cnv_kbs = (end_base - start_base) / 1000,
     cnv_chromosome = chromosome,
-    cnv_midbp = round((end_base + start_base) / 2),
+    cnv_midbp = as.integer(round((end_base + start_base) / 2)),
     cnv_targets = paste0(start_target, "..", end_target),
     num_targets = end_target - start_target + 1,
     cnv_gene = gene_str,
@@ -686,104 +687,6 @@ infer_reference_samples <- function(
     clean_samples    = clean_samples,
     anomaly_score    = mad_scores,
     normalized_counts = norm_counts
-  )
-}
-
-
-#' Detect Outlier Samples  (robust z-score on MAD noise)
-#'
-#' @param counts      Numeric matrix or data frame.
-#' @param pseudocount Numeric.
-#' @param z_threshold Numeric. Robust z-score of the sample's noise (MAD of
-#'   log2 counts) above which a sample is flagged as a (noisy) outlier.
-#'
-#' @return Data frame: sample, noise_score, robust_z, is_outlier.
-#' @export
-detect_outlier_samples <- function(counts, pseudocount = 0.5, z_threshold = 3) {
-  counts <- as.matrix(counts)
-  log_counts   <- log2(counts + pseudocount)
-  sample_noise <- apply(log_counts, 2, stats::mad, na.rm = TRUE)
-
-  med  <- median(sample_noise, na.rm = TRUE)
-  mad0 <- stats::mad(sample_noise, na.rm = TRUE)
-
-  z_scores  <- if (length(sample_noise) > 1L && is.finite(mad0) && mad0 > 0)
-    (sample_noise - med) / mad0 else rep(0, length(sample_noise))
-
-  # One-sided: only unusually *noisy* samples are outliers. A sample that is
-  # much cleaner than the cohort (large negative z) is the best kind of
-  # reference and must not be excluded.
-  is_outlier <- z_scores > z_threshold
-
-  data.frame(
-    sample       = names(sample_noise),
-    noise_score  = sample_noise,
-    robust_z     = z_scores,
-    is_outlier   = is_outlier,
-    stringsAsFactors = FALSE
-  )
-}
-
-
-#' Detect Problematic Exons
-#'
-#' Flags exons with high MAD (cross-sample noise), low mean coverage,
-#' extreme GC content, or non-finite values.  Ensures at least one
-#' exon per chromosome is retained to prevent empty chromosomes.
-#'
-#' @param count_matrix Numeric matrix (targets × samples).
-#' @param chromosomes  Optional factor/character vector of chromosome labels.
-#' @param mad_quantile Numeric. Top quantile of exon MAD (computed on log2
-#'                     counts, so it is independent of depth) to flag.
-#' @param min_mean     Numeric. Minimum mean coverage to retain.
-#' @param gc           Optional numeric vector of GC content (0–1 or 0–100).
-#' @param gc_min       Numeric. Minimum GC fraction.
-#' @param gc_max       Numeric. Maximum GC fraction.
-#'
-#' @return Data frame: exon (row index), mean, mad, problematic.
-#' @export
-detect_problematic_exons <- function(
-    count_matrix,
-    chromosomes  = NULL,
-    mad_quantile = 0.90,
-    min_mean     = 20,
-    gc           = NULL,
-    gc_min       = 0.10,
-    gc_max       = 0.90
-) {
-  count_matrix <- as.matrix(count_matrix)
-  exon_mean    <- rowMeans(count_matrix, na.rm = TRUE)
-  # MAD on the log2 scale: a MAD of raw counts grows with depth, so a
-  # "top 10 % by MAD" cut would preferentially discard the best-covered (most
-  # informative) exons instead of the most erratic ones.
-  exon_mad     <- apply(log2(pmax(count_matrix, 0) + 1), 1, stats::mad, na.rm = TRUE)
-  mad_thresh   <- stats::quantile(exon_mad, probs = mad_quantile, na.rm = TRUE)
-
-  problematic  <- (exon_mad > mad_thresh | exon_mean < min_mean |
-                     !is.finite(exon_mean))
-
-  if (!is.null(gc)) {
-    if (length(gc) != nrow(count_matrix))
-      stop("'gc' must have one value per row of count_matrix (", nrow(count_matrix),
-           " rows, got ", length(gc), ").")
-    gc_val       <- if (max(gc, na.rm = TRUE) > 1) gc / 100 else gc
-    problematic  <- problematic | gc_val < gc_min | gc_val > gc_max |
-      !is.finite(gc_val)
-  }
-
-  if (!is.null(chromosomes)) {
-    for (chr in unique(chromosomes)) {
-      idx <- which(chromosomes == chr)
-      if (length(idx) > 0 && all(problematic[idx]))
-        problematic[idx[which.min(exon_mad[idx])]] <- FALSE
-    }
-  }
-
-  data.frame(
-    exon        = seq_len(nrow(count_matrix)),
-    mean        = exon_mean,
-    mad         = exon_mad,
-    problematic = problematic
   )
 }
 

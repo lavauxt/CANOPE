@@ -215,34 +215,16 @@ hmm_constrained_likelihood <- function(
 
 
 #' @export
-build_cnv_hmm <- function(emission_matrix, distances, p, expected_targets, span_bp) {
-  params <- hmm_params(p, expected_targets, span_bp)
-  dist_vec <- if (is.data.frame(distances)) distances$distance else distances
-  structure(
-    list(
-      emissions = emission_matrix,
-      distances = dist_vec,
-      params = params,
-      n_targets = nrow(emission_matrix)
-    ),
-    class = "cnv_hmm"
-  )
-}
-
-
-#' @export
 decode_hmm_states <- function(
     emission_matrix,
     distances,
     params = NULL,
     transition_model = c("distance", "stationary"),
-    backend = c("native", "HMM"),
     p = NULL,
     expected_targets = NULL,
     span_bp = NULL
 ) {
   transition_model <- match.arg(transition_model)
-  backend <- match.arg(backend)
 
   if (is.null(params)) {
     if (is.null(p) || is.null(expected_targets))
@@ -253,25 +235,7 @@ decode_hmm_states <- function(
   }
 
   stationary <- transition_model == "stationary"
-  if (stationary && backend == "HMM") {
-    return(.decode_stationary_hmm_package(emission_matrix, params))
-  }
   hmm_viterbi(emission_matrix, distances, params, stationary = stationary)
-}
-
-
-#' @noRd
-.decode_stationary_hmm_package <- function(emission_matrix, params) {
-  hmm_obj <- build_hmm_object(emission_matrix, params$p, params$expected_targets)
-  decoded <- HMM::viterbi(hmm_obj, as.character(seq_len(nrow(emission_matrix))))
-  states <- rep(state_normal, length(decoded))
-  states[decoded == "DEL"] <- state_deletion
-  states[decoded == "DUP"] <- state_duplication
-  data.frame(
-    target = emission_matrix[, "target"],
-    state = states,
-    viterbi_state = states
-  )
 }
 
 
@@ -334,41 +298,6 @@ log_sum_exp <- function(x) {
   max_x + log(sum(exp(x - max_x)))
 }
 
-
-#' @export
-add_two_probabilities <- function(x, y) {
-  if (is.infinite(x)) return(y)
-  if (is.infinite(y)) return(x)
-  max(x, y) + log1p(exp(-abs(x - y)))
-}
-
-
-#' @export
-build_hmm_object <- function(emission_matrix, p, expected_targets) {
-  params <- hmm_params(p, expected_targets, span_bp = Inf)
-  symbols <- as.character(seq_len(nrow(emission_matrix)))
-  q <- params$q
-  pi_mat <- matrix(
-    c(1 - q - p, q, p, p, 1 - 2 * p, p, p, q, 1 - q - p),
-    nrow = 3, byrow = TRUE
-  )
-  pi_mat <- pmax(pi_mat, .Machine$double.eps)
-  colnames(pi_mat) <- rownames(pi_mat) <- state_names
-
-  log_em <- .hmm_emission_matrix(emission_matrix)
-  shifted <- log_em - apply(log_em, 1, max)
-  emission_probs_mat <- t(exp(shifted))
-  colnames(emission_probs_mat) <- symbols
-  rownames(emission_probs_mat) <- state_names
-
-  HMM::initHMM(
-    States = state_names,
-    Symbols = symbols,
-    startProbs = exp(.hmm_initial_logprobs(params)),
-    transProbs = pi_mat,
-    emissionProbs = emission_probs_mat
-  )
-}
 
 #' @export
 legacy_num_states <- 3L
